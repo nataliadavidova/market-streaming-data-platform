@@ -1,0 +1,15 @@
+exchange: binance
+
+stream:
+  type: trades
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+
+kafka:
+  raw_topic: market.trades.raw
+
+producer:
+  reconnect_delay_seconds: 5
+  max_reconnect_delay_seconds: 60
