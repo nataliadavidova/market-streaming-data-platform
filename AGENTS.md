@@ -22,11 +22,14 @@ Do not make large refactors unless explicitly requested.
 
 Do not modify many unrelated files in one step.
 
-## Current branch
+## Branching
 
-Work on:
+Default base branch:
 
-`feature/project-bootstrap`
+`main`
+
+Create a short-lived feature branch for each small task.
+Do not work directly on `main` unless explicitly instructed.
 
 ## Versioned roadmap
 
@@ -84,11 +87,10 @@ Current producer module:
 
 `jobs/producer/config.py`
 
-Current implemented function:
+Current implemented functions:
 
-`load_config(config_path)`
-
-It reads YAML config using PyYAML and returns a Python dictionary.
+- `load_config(config_path)`: reads YAML config using PyYAML and returns a Python dictionary.
+- `load_producer_config(config_path)`: reads and validates producer config using Pydantic models.
 
 ## Python environment
 
@@ -132,14 +134,12 @@ Do not add ignored files.
 
 ## Immediate next likely step
 
-Add a minimal unit test for:
+Next likely small steps:
 
-`jobs.producer.config.load_config`
+- Add GitHub Actions CI to run `make test` on pull requests.
+- Or begin the market producer implementation in small pieces.
 
-The test should verify that:
-- YAML config can be loaded.
-- `exchange` equals `binance`.
-- symbols include `BTCUSDT`, `ETHUSDT`, and `SOLUSDT`.
-- raw Kafka topic equals `market.trades.raw`.
+Current test suite:
 
-Keep the test small.
+- 3 unit tests cover raw config loading, valid producer config validation, and invalid producer config validation.
+- `make test` passes locally.
