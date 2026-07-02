@@ -83,14 +83,16 @@ Current config file:
 
 `config/market_symbols.yaml`
 
-Current producer module:
+Current producer modules:
 
-`jobs/producer/config.py`
+- `jobs/producer/config.py`
+- `jobs/producer/events.py`
 
-Current implemented functions:
+Current implemented functions and models:
 
 - `load_config(config_path)`: reads YAML config using PyYAML and returns a Python dictionary.
 - `load_producer_config(config_path)`: reads and validates producer config using Pydantic models.
+- `TradeEvent`: internal producer trade event contract. It validates `exchange`, `symbol`, `trade_id`, `price`, `quantity`, `event_time_ms`, and `ingested_at_ms`. `price` and `quantity` use `Decimal`.
 
 ## Python environment
 
@@ -134,12 +136,11 @@ Do not add ignored files.
 
 ## Immediate next likely step
 
-Next likely small steps:
+Next likely small step:
 
-- Add GitHub Actions CI to run `make test` on pull requests.
-- Or begin the market producer implementation in small pieces.
+- Parse Binance trade messages into `TradeEvent`.
 
 Current test suite:
 
-- 3 unit tests cover raw config loading, valid producer config validation, and invalid producer config validation.
+- 15 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, and `TradeEvent` validation.
 - `make test` passes locally.
