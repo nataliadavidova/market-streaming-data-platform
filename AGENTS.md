@@ -87,12 +87,14 @@ Current producer modules:
 
 - `jobs/producer/config.py`
 - `jobs/producer/events.py`
+- `jobs/producer/binance.py`
 
 Current implemented functions and models:
 
 - `load_config(config_path)`: reads YAML config using PyYAML and returns a Python dictionary.
 - `load_producer_config(config_path)`: reads and validates producer config using Pydantic models.
 - `TradeEvent`: internal producer trade event contract. It validates `exchange`, `symbol`, `trade_id`, `price`, `quantity`, `event_time_ms`, and `ingested_at_ms`. `price` and `quantity` use `Decimal`.
+- `parse_binance_trade_message(raw_message, ingested_at_ms)`: parses a Binance trade message into `TradeEvent`. It maps `s` to `symbol`, `t` to `trade_id`, `p` to `price`, `q` to `quantity`, and `T` to `event_time_ms`.
 
 ## Python environment
 
@@ -138,9 +140,9 @@ Do not add ignored files.
 
 Next likely small step:
 
-- Parse Binance trade messages into `TradeEvent`.
+- Serialize `TradeEvent` to a JSON message for future Kafka publishing.
 
 Current test suite:
 
-- 15 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, and `TradeEvent` validation.
+- 23 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, and Binance trade parsing.
 - `make test` passes locally.
