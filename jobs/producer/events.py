@@ -19,3 +19,6 @@ class TradeEvent(BaseModel):
     quantity: PositiveDecimal
     event_time_ms: PositiveInt
     ingested_at_ms: PositiveInt
+
+    def to_json_message(self) -> str:
+        return self.model_dump_json()

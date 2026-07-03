@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -23,6 +24,28 @@ def test_trade_event_accepts_string_decimal_inputs() -> None:
 
     assert event.price == Decimal("68250.12")
     assert event.quantity == Decimal("0.015")
+
+
+def test_trade_event_serializes_to_deterministic_json_message() -> None:
+    event = TradeEvent.model_validate(valid_trade_event_data())
+
+    message = event.to_json_message()
+
+    assert (
+        message
+        == '{"exchange":"binance","symbol":"BTCUSDT","trade_id":"12345",'
+        '"price":"68250.12","quantity":"0.015","event_time_ms":1735689600123,'
+        '"ingested_at_ms":1735689600456}'
+    )
+
+
+def test_trade_event_json_message_preserves_decimals_as_strings() -> None:
+    event = TradeEvent.model_validate(valid_trade_event_data())
+
+    message_data = json.loads(event.to_json_message())
+
+    assert message_data["price"] == "68250.12"
+    assert message_data["quantity"] == "0.015"
 
 
 @pytest.mark.parametrize(
