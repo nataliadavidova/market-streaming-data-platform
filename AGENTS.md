@@ -89,6 +89,7 @@ Current producer modules:
 - `jobs/producer/events.py`
 - `jobs/producer/binance.py`
 - `jobs/producer/kafka.py`
+- `jobs/producer/publisher.py`
 
 Current implemented functions and models:
 
@@ -98,7 +99,9 @@ Current implemented functions and models:
 - `TradeEvent.to_json_message()`: serializes a trade event to deterministic JSON for future Kafka publishing. `Decimal` values are preserved as JSON strings.
 - `parse_binance_trade_message(raw_message, ingested_at_ms)`: parses a Binance trade message into `TradeEvent`. It maps `s` to `symbol`, `t` to `trade_id`, `p` to `price`, `q` to `quantity`, and `T` to `event_time_ms`.
 - `KafkaMessage`: typed key/value message contract for future Kafka publishing.
-- `prepare_trade_event_kafka_message(event)`: prepares deterministic Kafka key/value payloads from a `TradeEvent` without connecting to Kafka. The key format is `{exchange}:{symbol}`, for example `binance:BTCUSDT`, and the value is `TradeEvent.to_json_message()`.
+- `prepare_trade_event_kafka_message(event)`: prepares deterministic Kafka key/value payloads from a `TradeEvent` without connecting to Kafka. Kafka key example: `binance:BTCUSDT`. The value is `TradeEvent.to_json_message()`.
+- `KafkaProducerClient`: protocol for injectable Kafka-like clients used by the publisher wrapper.
+- `KafkaPublisher`: wrapper that publishes prepared `KafkaMessage` objects to a configured topic by UTF-8 encoding the key and value. It uses an injectable client, so unit tests do not require a real Kafka broker.
 
 ## Python environment
 
@@ -148,9 +151,9 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Add the first real Kafka producer wrapper/client integration that can publish prepared `KafkaMessage` objects to Kafka, without implementing the full Binance WebSocket loop yet.
+- Add a concrete Kafka client adapter using a real Kafka Python library, still without implementing the full Binance WebSocket loop.
 
 Current test suite:
 
-- 27 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance trade parsing, and Kafka message contract preparation.
+- 31 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance trade parsing, Kafka message contract preparation, and Kafka publisher wrapper behavior.
 - `make test` passes locally.
