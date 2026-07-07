@@ -90,6 +90,7 @@ Current producer modules:
 - `jobs/producer/binance.py`
 - `jobs/producer/kafka.py`
 - `jobs/producer/publisher.py`
+- `jobs/producer/confluent.py`
 
 Current implemented functions and models:
 
@@ -102,6 +103,7 @@ Current implemented functions and models:
 - `prepare_trade_event_kafka_message(event)`: prepares deterministic Kafka key/value payloads from a `TradeEvent` without connecting to Kafka. Kafka key example: `binance:BTCUSDT`. The value is `TradeEvent.to_json_message()`.
 - `KafkaProducerClient`: protocol for injectable Kafka-like clients used by the publisher wrapper.
 - `KafkaPublisher`: wrapper that publishes prepared `KafkaMessage` objects to a configured topic by UTF-8 encoding the key and value. It uses an injectable client, so unit tests do not require a real Kafka broker.
+- `ConfluentKafkaProducerClient`: adapter that adapts `confluent_kafka.Producer` to the existing `KafkaProducerClient` protocol. `send(topic, key, value)` delegates to `Producer.produce(topic=topic, key=key, value=value)`, and `flush()` delegates to `Producer.flush()`.
 
 ## Python environment
 
@@ -116,6 +118,10 @@ Python version target:
 The project is installed locally in editable mode with:
 
 `python -m pip install -e .`
+
+Runtime Kafka client dependency:
+
+`confluent-kafka>=2,<3`
 
 ## Packaging
 
@@ -151,9 +157,9 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Add a concrete Kafka client adapter using a real Kafka Python library, still without implementing the full Binance WebSocket loop.
+- Add a minimal local Kafka service configuration for development/testing, without implementing the full Binance WebSocket loop yet.
 
 Current test suite:
 
-- 31 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance trade parsing, Kafka message contract preparation, and Kafka publisher wrapper behavior.
+- 34 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance trade parsing, Kafka message contract preparation, Kafka publisher wrapper behavior, and the Confluent Kafka producer adapter.
 - `make test` passes locally.
