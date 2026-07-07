@@ -83,6 +83,12 @@ Current config file:
 
 `config/market_symbols.yaml`
 
+Current local service config:
+
+- `docker-compose.yml`: defines one local Kafka service for development/testing. It uses `apache/kafka:4.0.0`, runs single-node Kafka in KRaft mode, exposes the host listener at `localhost:9092`, and exposes the internal Docker-network listener at `kafka:29092`. It does not use ZooKeeper and does not include a topic creation service yet.
+- `docker compose config` has passed for the local Kafka service configuration.
+- `docker compose up` has not been run yet.
+
 Current producer modules:
 
 - `jobs/producer/config.py`
@@ -157,7 +163,7 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Add a minimal local Kafka service configuration for development/testing, without implementing the full Binance WebSocket loop yet.
+- Run the first local Kafka smoke-check with `docker compose up`, verify the broker starts, then shut it down cleanly; do not implement the full Binance WebSocket loop yet.
 
 Current test suite:
 
