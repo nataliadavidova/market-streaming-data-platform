@@ -87,7 +87,9 @@ Current local service config:
 
 - `docker-compose.yml`: defines one local Kafka service for development/testing. It uses `apache/kafka:4.0.0`, runs single-node Kafka in KRaft mode, exposes the host listener at `localhost:9092`, and exposes the internal Docker-network listener at `kafka:29092`. It does not use ZooKeeper and does not include a topic creation service yet.
 - `docker compose config` has passed for the local Kafka service configuration.
-- `docker compose up` has not been run yet.
+- `docker compose up -d kafka` smoke-check has passed. Kafka started successfully, reached a running/ready/started state in logs, and `docker compose down` shut it down cleanly.
+- No Kafka topics have been created yet.
+- No producer code has been run against Kafka yet.
 
 Current producer modules:
 
@@ -163,7 +165,7 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Run the first local Kafka smoke-check with `docker compose up`, verify the broker starts, then shut it down cleanly; do not implement the full Binance WebSocket loop yet.
+- Add an explicit local Kafka topic setup/check step for `market.trades.raw`, without implementing the full Binance WebSocket loop yet.
 
 Current test suite:
 
