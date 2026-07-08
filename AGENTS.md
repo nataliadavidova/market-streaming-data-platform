@@ -89,8 +89,8 @@ Current local service config:
 - `docker compose config` has passed for the local Kafka service configuration.
 - `docker compose up -d kafka` smoke-check has passed. Kafka started successfully, reached a running/ready/started state in logs, and `docker compose down` shut it down cleanly.
 - Manual local Kafka topic setup/check has passed for `market.trades.raw`. The topic was created successfully and described with `PartitionCount: 1` and `ReplicationFactor: 1`.
-- Topic setup is still manual and is not automated yet.
-- No Makefile commands or topic-init service have been added yet.
+- Makefile commands have been added and runtime-checked successfully for `kafka-up`, `kafka-down`, `kafka-create-topic`, and `kafka-describe-topic`.
+- No topic-init service has been added yet.
 - No producer code has been run against Kafka yet.
 
 Current producer modules:
@@ -167,7 +167,7 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Add Makefile commands for local Kafka up/down and topic create/describe, without running producer code yet.
+- Add the first local producer smoke-test that publishes one test `TradeEvent` to `market.trades.raw`, without implementing the full Binance WebSocket loop yet.
 
 Current test suite:
 
