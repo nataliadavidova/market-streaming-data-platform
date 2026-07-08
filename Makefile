@@ -1,4 +1,9 @@
-.PHONY: install-dev test status
+KAFKA_BOOTSTRAP_SERVER := localhost:9092
+KAFKA_TOPIC := market.trades.raw
+KAFKA_TOPIC_PARTITIONS := 1
+KAFKA_TOPIC_REPLICATION_FACTOR := 1
+
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -8,3 +13,24 @@ test:
 
 status:
 	git status --short
+
+kafka-up:
+	docker compose up -d kafka
+
+kafka-down:
+	docker compose down
+
+kafka-create-topic:
+	docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+		--bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) \
+		--create \
+		--if-not-exists \
+		--topic $(KAFKA_TOPIC) \
+		--partitions $(KAFKA_TOPIC_PARTITIONS) \
+		--replication-factor $(KAFKA_TOPIC_REPLICATION_FACTOR)
+
+kafka-describe-topic:
+	docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+		--bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) \
+		--describe \
+		--topic $(KAFKA_TOPIC)
