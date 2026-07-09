@@ -3,7 +3,7 @@ KAFKA_TOPIC := market.trades.raw
 KAFKA_TOPIC_PARTITIONS := 1
 KAFKA_TOPIC_REPLICATION_FACTOR := 1
 
-.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -34,3 +34,11 @@ kafka-describe-topic:
 		--bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) \
 		--describe \
 		--topic $(KAFKA_TOPIC)
+
+kafka-consume-one:
+	docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+		--bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) \
+		--topic $(KAFKA_TOPIC) \
+		--from-beginning \
+		--max-messages 1 \
+		--timeout-ms 10000
