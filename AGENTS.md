@@ -93,7 +93,7 @@ Current local service config:
 - Makefile command `kafka-consume-one` has been added. It wraps the bounded console consumer check for `market.trades.raw`.
 - Makefile command `kafka-smoke-publish-one` has been added. It wraps `python -m jobs.producer.smoke_publish_one`.
 - The full local Kafka Makefile workflow runtime-check has passed: `make kafka-up`, `make kafka-create-topic`, `python -m jobs.producer.smoke_publish_one`, `make kafka-consume-one`, and `make kafka-down`. `make kafka-consume-one` read the expected smoke-test message with `trade_id` `smoke-test-1` and exited cleanly with exit code 0.
-- The previous full workflow runtime-check passed using the raw Python producer command. The cleaner workflow using `make kafka-smoke-publish-one` has not yet been runtime-checked.
+- The cleaner all-Makefile Kafka workflow runtime-check has passed: `make kafka-up`, `make kafka-create-topic`, `make kafka-smoke-publish-one`, `make kafka-consume-one`, and `make kafka-down`. `make kafka-smoke-publish-one` succeeded. `make kafka-consume-one` read the expected smoke-test message with `trade_id` `smoke-test-1` and exited cleanly with exit code 0.
 - The first one-event producer runtime smoke-test against local Kafka has passed. `python -m jobs.producer.smoke_publish_one` succeeded and published one synthetic trade event to `market.trades.raw`.
 - The manual bounded Kafka consume/check has passed. `kafka-console-consumer.sh` successfully read the smoke-test message from `market.trades.raw` with `trade_id` `smoke-test-1`, confirming the first small Kafka round-trip: Python producer → Kafka topic → console consumer.
 - No topic-init service has been added yet.
@@ -178,7 +178,7 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Runtime-check the cleaner full local Kafka Makefile workflow: `make kafka-up`, `make kafka-create-topic`, `make kafka-smoke-publish-one`, `make kafka-consume-one`, `make kafka-down`.
+- Decide the next V1 producer step: either update README for the completed local Kafka producer slice, or start the Binance WebSocket producer loop.
 
 Current test suite:
 
