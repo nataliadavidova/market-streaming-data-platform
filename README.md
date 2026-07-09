@@ -8,17 +8,45 @@ Planned Version 1 flow:
 
 `Market API/WebSocket -> Kafka -> Spark Structured Streaming -> Iceberg on S3-compatible storage -> ClickHouse -> dashboard + basic DQ checks`
 
-This repository is currently in the bootstrap phase. Kafka, Spark, Iceberg, ClickHouse, and dashboard components are not implemented yet.
+This repository is currently in the bootstrap phase. Spark, Iceberg, ClickHouse, and dashboard components are not implemented yet.
 
 ## Current Implementation
 
-The current implemented piece is a Python config loader:
+Current implemented pieces:
 
-- Module: `jobs.producer.config`
-- Function: `load_config(config_path)`
-- Config file: `config/market_symbols.yaml`
+- Typed producer config loading from `config/market_symbols.yaml`
+- `TradeEvent` modeling, Binance trade parsing, and Kafka message preparation
+- Local Kafka service configuration
+- One-event synthetic producer smoke-check for `market.trades.raw`
 
-The config file currently defines Binance trade symbols and the raw Kafka topic name for future producer work.
+Live Binance WebSocket streaming is not implemented yet.
+
+## Local Kafka Producer Smoke Check
+
+The local Kafka producer slice currently supports a bounded smoke-check with a synthetic trade event:
+
+- Local Kafka service through Docker Compose
+- `market.trades.raw` Kafka topic
+- One-event producer smoke publisher
+- Bounded consume-one check
+
+Run the local smoke-check:
+
+```bash
+make kafka-up
+make kafka-create-topic
+make kafka-smoke-publish-one
+make kafka-consume-one
+make kafka-down
+```
+
+Successful consume output should include a JSON message with `"trade_id":"smoke-test-1"` and:
+
+```text
+Processed a total of 1 messages
+```
+
+This is a local smoke-check using a synthetic event. Live Binance WebSocket streaming is not implemented yet.
 
 ## Local Development
 
