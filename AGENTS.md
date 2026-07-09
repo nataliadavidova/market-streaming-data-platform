@@ -91,9 +91,10 @@ Current local service config:
 - Manual local Kafka topic setup/check has passed for `market.trades.raw`. The topic was created successfully and described with `PartitionCount: 1` and `ReplicationFactor: 1`.
 - Makefile commands have been added and runtime-checked successfully for `kafka-up`, `kafka-down`, `kafka-create-topic`, and `kafka-describe-topic`.
 - The first one-event producer runtime smoke-test against local Kafka has passed. `python -m jobs.producer.smoke_publish_one` succeeded and published one synthetic trade event to `market.trades.raw`.
+- The manual bounded Kafka consume/check has passed. `kafka-console-consumer.sh` successfully read the smoke-test message from `market.trades.raw` with `trade_id` `smoke-test-1`, confirming the first small Kafka round-trip: Python producer → Kafka topic → console consumer.
 - No topic-init service has been added yet.
 - The Binance WebSocket loop has not been implemented yet.
-- No consumer/read check has been added or run yet.
+- No committed Makefile command or Python consumer/read check has been added yet.
 
 Current producer modules:
 
@@ -173,7 +174,7 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Add a minimal local Kafka consume/check step to verify the smoke-test message can be read from `market.trades.raw`, without implementing the full Binance WebSocket loop yet.
+- Add a Makefile command for the bounded Kafka consume/check, without implementing the full Binance WebSocket loop yet.
 
 Current test suite:
 
