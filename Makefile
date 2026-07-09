@@ -3,7 +3,7 @@ KAFKA_TOPIC := market.trades.raw
 KAFKA_TOPIC_PARTITIONS := 1
 KAFKA_TOPIC_REPLICATION_FACTOR := 1
 
-.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -13,6 +13,9 @@ test:
 
 status:
 	git status --short
+
+kafka-smoke-publish-one:
+	python -m jobs.producer.smoke_publish_one
 
 kafka-up:
 	docker compose up -d kafka
