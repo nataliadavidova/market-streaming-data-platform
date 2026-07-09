@@ -96,6 +96,9 @@ Current local service config:
 - The cleaner all-Makefile Kafka workflow runtime-check has passed: `make kafka-up`, `make kafka-create-topic`, `make kafka-smoke-publish-one`, `make kafka-consume-one`, and `make kafka-down`. `make kafka-smoke-publish-one` succeeded. `make kafka-consume-one` read the expected smoke-test message with `trade_id` `smoke-test-1` and exited cleanly with exit code 0.
 - The first one-event producer runtime smoke-test against local Kafka has passed. `python -m jobs.producer.smoke_publish_one` succeeded and published one synthetic trade event to `market.trades.raw`.
 - The manual bounded Kafka consume/check has passed. `kafka-console-consumer.sh` successfully read the smoke-test message from `market.trades.raw` with `trade_id` `smoke-test-1`, confirming the first small Kafka round-trip: Python producer → Kafka topic → console consumer.
+- `README.md` now documents the completed local Kafka producer smoke-check.
+- GitHub Actions CI is configured in `.github/workflows/ci.yml` and runs `make test` on pull requests and pushes to `main`.
+- Kafka smoke-checks remain manual and are not part of CI yet.
 - No topic-init service has been added yet.
 - The Binance WebSocket loop has not been implemented yet.
 - No Python consumer/read check has been added yet.
@@ -178,7 +181,7 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Decide the next V1 producer step: either update README for the completed local Kafka producer slice, or start the Binance WebSocket producer loop.
+- Start the Binance WebSocket producer loop in small steps.
 
 Current test suite:
 
