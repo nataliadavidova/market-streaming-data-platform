@@ -90,8 +90,10 @@ Current local service config:
 - `docker compose up -d kafka` smoke-check has passed. Kafka started successfully, reached a running/ready/started state in logs, and `docker compose down` shut it down cleanly.
 - Manual local Kafka topic setup/check has passed for `market.trades.raw`. The topic was created successfully and described with `PartitionCount: 1` and `ReplicationFactor: 1`.
 - Makefile commands have been added and runtime-checked successfully for `kafka-up`, `kafka-down`, `kafka-create-topic`, and `kafka-describe-topic`.
+- The first one-event producer runtime smoke-test against local Kafka has passed. `python -m jobs.producer.smoke_publish_one` succeeded and published one synthetic trade event to `market.trades.raw`.
 - No topic-init service has been added yet.
-- No producer code has been run against Kafka yet.
+- The Binance WebSocket loop has not been implemented yet.
+- No consumer/read check has been added or run yet.
 
 Current producer modules:
 
@@ -101,6 +103,7 @@ Current producer modules:
 - `jobs/producer/kafka.py`
 - `jobs/producer/publisher.py`
 - `jobs/producer/confluent.py`
+- `jobs/producer/smoke_publish_one.py`
 
 Current implemented functions and models:
 
@@ -114,6 +117,9 @@ Current implemented functions and models:
 - `KafkaProducerClient`: protocol for injectable Kafka-like clients used by the publisher wrapper.
 - `KafkaPublisher`: wrapper that publishes prepared `KafkaMessage` objects to a configured topic by UTF-8 encoding the key and value. It uses an injectable client, so unit tests do not require a real Kafka broker.
 - `ConfluentKafkaProducerClient`: adapter that adapts `confluent_kafka.Producer` to the existing `KafkaProducerClient` protocol. `send(topic, key, value)` delegates to `Producer.produce(topic=topic, key=key, value=value)`, and `flush()` delegates to `Producer.flush()`.
+- `build_synthetic_trade_event()`: builds one deterministic synthetic `TradeEvent` for local producer smoke testing.
+- `publish_one_synthetic_trade_event(client, topic)`: publishes one synthetic trade event through an injectable Kafka producer client. The default topic is `market.trades.raw`.
+- `build_local_kafka_client(bootstrap_servers)`: creates a `ConfluentKafkaProducerClient` for the local Kafka bootstrap server. The default bootstrap server is `localhost:9092`.
 
 ## Python environment
 
@@ -167,9 +173,9 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Add the first local producer smoke-test that publishes one test `TradeEvent` to `market.trades.raw`, without implementing the full Binance WebSocket loop yet.
+- Add a minimal local Kafka consume/check step to verify the smoke-test message can be read from `market.trades.raw`, without implementing the full Binance WebSocket loop yet.
 
 Current test suite:
 
-- 34 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance trade parsing, Kafka message contract preparation, Kafka publisher wrapper behavior, and the Confluent Kafka producer adapter.
+- 37 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance trade parsing, Kafka message contract preparation, Kafka publisher wrapper behavior, the Confluent Kafka producer adapter, and the one-event producer smoke publisher.
 - `make test` passes locally.
