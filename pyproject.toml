@@ -6,6 +6,7 @@ dependencies = [
     "PyYAML>=6.0,<7",
     "confluent-kafka>=2,<3",
     "pydantic>=2,<3",
+    "websockets>=15,<16",
 ]
 
 [project.optional-dependencies]
