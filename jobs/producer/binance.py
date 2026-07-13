@@ -1,5 +1,6 @@
 """Helpers for Binance trade stream messages and stream URLs."""
 
+from jobs.producer.config import ProducerConfig
 from jobs.producer.events import TradeEvent
 
 
@@ -12,6 +13,15 @@ def build_binance_combined_trade_stream_url(symbols: list[str]) -> str:
 
     streams = "/".join(f"{symbol.lower()}@trade" for symbol in symbols)
     return f"{BINANCE_COMBINED_STREAM_BASE_URL}?streams={streams}"
+
+
+def build_binance_combined_trade_stream_url_from_config(
+    config: ProducerConfig,
+) -> str:
+    if not config.stream.symbols:
+        raise ValueError("config.stream.symbols must contain at least one symbol")
+
+    return build_binance_combined_trade_stream_url(config.stream.symbols)
 
 
 def parse_binance_trade_message(
