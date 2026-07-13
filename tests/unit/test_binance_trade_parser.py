@@ -3,7 +3,10 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from jobs.producer.binance import parse_binance_trade_message
+from jobs.producer.binance import (
+    build_binance_combined_trade_stream_url,
+    parse_binance_trade_message,
+)
 from jobs.producer.events import TradeEvent
 
 
@@ -15,6 +18,33 @@ def valid_binance_trade_message() -> dict[str, object]:
         "q": "0.015",
         "T": 1735689600123,
     }
+
+
+def test_build_binance_combined_trade_stream_url_for_configured_symbols() -> None:
+    url = build_binance_combined_trade_stream_url(["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+
+    assert (
+        url
+        == "wss://stream.binance.com:9443/stream?"
+        "streams=btcusdt@trade/ethusdt@trade/solusdt@trade"
+    )
+
+
+def test_build_binance_combined_trade_stream_url_lowercases_symbols() -> None:
+    url = build_binance_combined_trade_stream_url(["BtcUsdt", "EthUsdt"])
+
+    assert url.endswith("streams=btcusdt@trade/ethusdt@trade")
+
+
+def test_build_binance_combined_trade_stream_url_preserves_symbol_order() -> None:
+    url = build_binance_combined_trade_stream_url(["SOLUSDT", "BTCUSDT", "ETHUSDT"])
+
+    assert url.endswith("streams=solusdt@trade/btcusdt@trade/ethusdt@trade")
+
+
+def test_build_binance_combined_trade_stream_url_rejects_empty_symbols() -> None:
+    with pytest.raises(ValueError, match="symbols must contain at least one symbol"):
+        build_binance_combined_trade_stream_url([])
 
 
 def test_parse_binance_trade_message_maps_trade_event_fields() -> None:
