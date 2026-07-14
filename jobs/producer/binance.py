@@ -1,5 +1,7 @@
 """Helpers for Binance trade stream messages and stream URLs."""
 
+import json
+
 from jobs.producer.config import ProducerConfig
 from jobs.producer.events import TradeEvent
 
@@ -37,3 +39,22 @@ def parse_binance_trade_message(
         event_time_ms=raw_message["T"],
         ingested_at_ms=ingested_at_ms,
     )
+
+
+def parse_binance_combined_trade_message(
+    raw_message: str,
+    ingested_at_ms: int,
+) -> TradeEvent:
+    decoded_message = json.loads(raw_message)
+
+    if not isinstance(decoded_message, dict):
+        raise TypeError("Binance combined message must be a JSON object")
+
+    if "data" not in decoded_message:
+        raise ValueError('Binance combined message must contain "data"')
+
+    data = decoded_message["data"]
+    if not isinstance(data, dict):
+        raise TypeError('Binance combined message "data" must be a JSON object')
+
+    return parse_binance_trade_message(data, ingested_at_ms)

@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 
 import pytest
@@ -7,6 +8,7 @@ from jobs.producer import binance
 from jobs.producer.binance import (
     build_binance_combined_trade_stream_url,
     build_binance_combined_trade_stream_url_from_config,
+    parse_binance_combined_trade_message,
     parse_binance_trade_message,
 )
 from jobs.producer.config import ProducerConfig
@@ -21,6 +23,15 @@ def valid_binance_trade_message() -> dict[str, object]:
         "q": "0.015",
         "T": 1735689600123,
     }
+
+
+def valid_binance_combined_trade_message() -> str:
+    return json.dumps(
+        {
+            "stream": "btcusdt@trade",
+            "data": valid_binance_trade_message(),
+        }
+    )
 
 
 def valid_producer_config(symbols: list[str]) -> ProducerConfig:
@@ -183,3 +194,96 @@ def test_parse_binance_trade_message_raises_key_error_for_missing_field(
 
     with pytest.raises(KeyError):
         parse_binance_trade_message(raw_message, ingested_at_ms=1735689600456)
+
+
+def test_parse_binance_combined_trade_message_returns_trade_event() -> None:
+    event = parse_binance_combined_trade_message(
+        valid_binance_combined_trade_message(),
+        ingested_at_ms=1735689600456,
+    )
+
+    assert isinstance(event, TradeEvent)
+    assert event.symbol == "BTCUSDT"
+    assert event.trade_id == "12345"
+    assert event.event_time_ms == 1735689600123
+    assert event.ingested_at_ms == 1735689600456
+
+
+def test_parse_binance_combined_trade_message_delegates_inner_payload(
+    monkeypatch,
+) -> None:
+    called_with_message = None
+    called_with_ingested_at_ms = None
+
+    def fake_parse_trade_message(
+        raw_message: dict[str, object],
+        ingested_at_ms: int,
+    ) -> TradeEvent:
+        nonlocal called_with_message, called_with_ingested_at_ms
+        called_with_message = raw_message
+        called_with_ingested_at_ms = ingested_at_ms
+        return TradeEvent(
+            exchange="binance",
+            symbol="BTCUSDT",
+            trade_id="12345",
+            price="68250.12",
+            quantity="0.015",
+            event_time_ms=1735689600123,
+            ingested_at_ms=ingested_at_ms,
+        )
+
+    monkeypatch.setattr(
+        binance,
+        "parse_binance_trade_message",
+        fake_parse_trade_message,
+    )
+    inner_payload = valid_binance_trade_message()
+    raw_message = json.dumps({"stream": "btcusdt@trade", "data": inner_payload})
+
+    event = parse_binance_combined_trade_message(
+        raw_message,
+        ingested_at_ms=1735689600456,
+    )
+
+    assert called_with_message == inner_payload
+    assert called_with_ingested_at_ms == 1735689600456
+    assert event.trade_id == "12345"
+
+
+def test_parse_binance_combined_trade_message_propagates_invalid_json() -> None:
+    with pytest.raises(json.JSONDecodeError):
+        parse_binance_combined_trade_message("{", ingested_at_ms=1735689600456)
+
+
+def test_parse_binance_combined_trade_message_rejects_non_object_message() -> None:
+    with pytest.raises(
+        TypeError,
+        match="Binance combined message must be a JSON object",
+    ):
+        parse_binance_combined_trade_message("[]", ingested_at_ms=1735689600456)
+
+
+def test_parse_binance_combined_trade_message_rejects_missing_data() -> None:
+    raw_message = json.dumps({"stream": "btcusdt@trade"})
+
+    with pytest.raises(
+        ValueError,
+        match='Binance combined message must contain "data"',
+    ):
+        parse_binance_combined_trade_message(
+            raw_message,
+            ingested_at_ms=1735689600456,
+        )
+
+
+def test_parse_binance_combined_trade_message_rejects_non_object_data() -> None:
+    raw_message = json.dumps({"stream": "btcusdt@trade", "data": "not-object"})
+
+    with pytest.raises(
+        TypeError,
+        match='Binance combined message "data" must be a JSON object',
+    ):
+        parse_binance_combined_trade_message(
+            raw_message,
+            ingested_at_ms=1735689600456,
+        )
