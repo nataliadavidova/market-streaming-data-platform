@@ -4,7 +4,12 @@ import json
 
 from jobs.producer.config import ProducerConfig
 from jobs.producer.events import TradeEvent
-from jobs.producer.websocket import WebSocketConnect, receive_one_websocket_message
+from jobs.producer.websocket import (
+    Clock,
+    WebSocketConnect,
+    current_time_ms,
+    receive_one_websocket_message,
+)
 
 
 BINANCE_COMBINED_STREAM_BASE_URL = "wss://stream.binance.com:9443/stream"
@@ -63,11 +68,18 @@ def parse_binance_combined_trade_message(
 
 async def receive_one_binance_trade_event(
     config: ProducerConfig,
-    ingested_at_ms: int,
     *,
     connect: WebSocketConnect | None = None,
+    clock: Clock = current_time_ms,
 ) -> TradeEvent:
     url = build_binance_combined_trade_stream_url_from_config(config)
-    raw_message = await receive_one_websocket_message(url, connect=connect)
+    received = await receive_one_websocket_message(
+        url,
+        connect=connect,
+        clock=clock,
+    )
 
-    return parse_binance_combined_trade_message(raw_message, ingested_at_ms)
+    return parse_binance_combined_trade_message(
+        received.text,
+        received.received_at_ms,
+    )
