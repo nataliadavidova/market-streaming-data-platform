@@ -47,6 +47,8 @@ Not implemented yet:
 
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
+- [Kafka smoke-check runbook](docs/runbooks/kafka-smoke-check.md)
+- [Binance one-shot smoke-check runbook](docs/runbooks/binance-one-shot-smoke-check.md)
 
 ## Local Development
 
@@ -72,20 +74,9 @@ Current test status: 63 unit tests pass locally with `make test`.
 
 ## Manual Smoke Checks
 
-The local Kafka producer slice currently supports a bounded smoke-check with a synthetic trade event:
+Manual smoke checks are kept out of CI because they depend on local services or external network availability.
 
-```bash
-make kafka-up
-make kafka-create-topic
-make kafka-smoke-publish-one
-make kafka-consume-one
-make kafka-down
-```
+- [Kafka smoke-check](docs/runbooks/kafka-smoke-check.md): starts local Kafka, publishes one synthetic `TradeEvent`, consumes one message from `market.trades.raw`, and shuts Kafka down.
+- [Binance one-shot smoke-check](docs/runbooks/binance-one-shot-smoke-check.md): connects to Binance, receives and parses one live trade event, then closes the one-shot connection.
 
-Successful consume output should include a JSON message with `"trade_id":"smoke-test-1"` and:
-
-```text
-Processed a total of 1 messages
-```
-
-This local smoke-check uses a synthetic event. Continuous live Binance-to-Kafka streaming is not implemented yet.
+The Kafka check uses a synthetic event. The Binance check receives one live event. Continuous live Binance-to-Kafka streaming is not implemented yet.
