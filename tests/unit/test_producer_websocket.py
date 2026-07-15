@@ -2,25 +2,33 @@
 
 import asyncio
 
+import pytest
+
 from jobs.producer.websocket import (
     ReceivedWebSocketMessage,
+    open_websocket_message_receiver,
     receive_one_websocket_message,
 )
 
 
 class FakeWebSocket:
-    def __init__(self, message: str, events: list[str] | None = None) -> None:
-        self._message = message
+    def __init__(
+        self,
+        messages: str | list[str],
+        events: list[str] | None = None,
+    ) -> None:
+        self._messages = [messages] if isinstance(messages, str) else messages
         self.recv_count = 0
         self.recv_decode_values: list[bool | None] = []
         self.events = events
 
     async def recv(self, decode: bool | None = None) -> str:
+        message = self._messages[self.recv_count]
         self.recv_count += 1
         self.recv_decode_values.append(decode)
         if self.events is not None:
-            self.events.append("recv")
-        return self._message
+            self.events.append(f"recv:{self.recv_count}")
+        return message
 
 
 class FakeWebSocketContext:
@@ -37,6 +45,8 @@ class FakeWebSocketContext:
 
     async def __aenter__(self) -> FakeWebSocket:
         self.enter_count += 1
+        if self.events is not None:
+            self.events.append("enter")
         return self.websocket
 
     async def __aexit__(
@@ -61,6 +71,68 @@ class FakeWebSocketConnect:
         return self.context
 
 
+def test_open_websocket_message_receiver_passes_url_to_connection_factory() -> None:
+    websocket = FakeWebSocket('{"event":"trade"}')
+    context = FakeWebSocketContext(websocket)
+    connect = FakeWebSocketConnect(context)
+
+    async def run() -> None:
+        async with open_websocket_message_receiver(
+            "wss://stream.example.test/stream",
+            connect=connect,
+            clock=lambda: 1735689600456,
+        ):
+            pass
+
+    asyncio.run(run())
+
+    assert connect.urls == ["wss://stream.example.test/stream"]
+
+
+def test_open_websocket_message_receiver_receives_multiple_messages_on_one_connection() -> None:
+    events: list[str] = []
+    websocket = FakeWebSocket(
+        ['{"event":"first"}', '{"event":"second"}'],
+        events=events,
+    )
+    context = FakeWebSocketContext(websocket, events=events)
+    connect = FakeWebSocketConnect(context)
+    clock_values = iter([1735689600456, 1735689600789])
+
+    def clock() -> int:
+        events.append(f"clock:{websocket.recv_count}")
+        return next(clock_values)
+
+    async def run() -> tuple[ReceivedWebSocketMessage, ReceivedWebSocketMessage]:
+        async with open_websocket_message_receiver(
+            "wss://stream.example.test/stream",
+            connect=connect,
+            clock=clock,
+        ) as receiver:
+            first = await receiver.receive()
+            second = await receiver.receive()
+
+            return first, second
+
+    first, second = asyncio.run(run())
+
+    assert connect.urls == ["wss://stream.example.test/stream"]
+    assert context.enter_count == 1
+    assert context.exit_count == 1
+    assert context.exit_exception == (None, None)
+    assert websocket.recv_count == 2
+    assert websocket.recv_decode_values == [True, True]
+    assert events == ["enter", "recv:1", "clock:1", "recv:2", "clock:2", "exit"]
+    assert first == ReceivedWebSocketMessage(
+        text='{"event":"first"}',
+        received_at_ms=1735689600456,
+    )
+    assert second == ReceivedWebSocketMessage(
+        text='{"event":"second"}',
+        received_at_ms=1735689600789,
+    )
+
+
 def test_receive_one_websocket_message_passes_url_to_connection_factory() -> None:
     websocket = FakeWebSocket('{"event":"trade"}')
     context = FakeWebSocketContext(websocket)
@@ -75,6 +147,33 @@ def test_receive_one_websocket_message_passes_url_to_connection_factory() -> Non
     )
 
     assert connect.urls == ["wss://stream.example.test/stream"]
+
+
+def test_open_websocket_message_receiver_forwards_context_exceptions() -> None:
+    events: list[str] = []
+    websocket = FakeWebSocket('{"event":"trade"}')
+    context = FakeWebSocketContext(websocket, events=events)
+    connect = FakeWebSocketConnect(context)
+
+    async def run() -> None:
+        async with open_websocket_message_receiver(
+            "wss://stream.example.test/stream",
+            connect=connect,
+            clock=lambda: 1735689600456,
+        ):
+            raise RuntimeError("receive failed")
+
+    with pytest.raises(RuntimeError, match="receive failed"):
+        asyncio.run(run())
+
+    assert context.enter_count == 1
+    assert context.exit_count == 1
+    assert context.exit_exception is not None
+    exc_type, exc = context.exit_exception
+    assert exc_type is RuntimeError
+    assert isinstance(exc, RuntimeError)
+    assert str(exc) == "receive failed"
+    assert events == ["enter", "exit"]
 
 
 def test_receive_one_websocket_message_awaits_exactly_one_recv_call() -> None:
@@ -148,7 +247,7 @@ def test_receive_one_websocket_message_captures_timestamp_after_recv_before_exit
         )
     )
 
-    assert events == ["recv", "clock", "exit"]
+    assert events == ["enter", "recv:1", "clock", "exit"]
     assert received.text == '{"event":"trade"}'
     assert received.received_at_ms == 1735689600456
 
