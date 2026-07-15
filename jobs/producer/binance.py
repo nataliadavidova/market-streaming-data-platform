@@ -1,14 +1,18 @@
 """Helpers for Binance trade stream messages and stream URLs."""
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 from jobs.producer.config import ProducerConfig
 from jobs.producer.events import TradeEvent
 from jobs.producer.websocket import (
     Clock,
     WebSocketConnect,
+    WebSocketMessageReceiver,
     current_time_ms,
-    receive_one_websocket_message,
+    open_websocket_message_receiver,
 )
 
 
@@ -66,20 +70,45 @@ def parse_binance_combined_trade_message(
     return parse_binance_trade_message(data, ingested_at_ms)
 
 
+@dataclass(frozen=True)
+class BinanceTradeEventReceiver:
+    websocket_receiver: WebSocketMessageReceiver
+
+    async def receive(self) -> TradeEvent:
+        received = await self.websocket_receiver.receive()
+
+        return parse_binance_combined_trade_message(
+            received.text,
+            received.received_at_ms,
+        )
+
+
+@asynccontextmanager
+async def open_binance_trade_event_receiver(
+    config: ProducerConfig,
+    *,
+    connect: WebSocketConnect | None = None,
+    clock: Clock = current_time_ms,
+) -> AsyncIterator[BinanceTradeEventReceiver]:
+    url = build_binance_combined_trade_stream_url_from_config(config)
+
+    async with open_websocket_message_receiver(
+        url,
+        connect=connect,
+        clock=clock,
+    ) as websocket_receiver:
+        yield BinanceTradeEventReceiver(websocket_receiver=websocket_receiver)
+
+
 async def receive_one_binance_trade_event(
     config: ProducerConfig,
     *,
     connect: WebSocketConnect | None = None,
     clock: Clock = current_time_ms,
 ) -> TradeEvent:
-    url = build_binance_combined_trade_stream_url_from_config(config)
-    received = await receive_one_websocket_message(
-        url,
+    async with open_binance_trade_event_receiver(
+        config,
         connect=connect,
         clock=clock,
-    )
-
-    return parse_binance_combined_trade_message(
-        received.text,
-        received.received_at_ms,
-    )
+    ) as receiver:
+        return await receiver.receive()
