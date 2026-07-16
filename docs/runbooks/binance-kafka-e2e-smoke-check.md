@@ -110,7 +110,15 @@ python -m jobs.producer.binance_producer
 
 The producer is a permanent process. It does not exit after one message. After the bounded consumer receives one fresh message, stop the producer externally.
 
-An external `SIGINT` may produce `CancelledError`, `KeyboardInterrupt`, and a non-zero process status. That distinguishes a successful data-path smoke-check from graceful shutdown behavior, which is not implemented yet.
+Send `SIGINT` to the producer after one fresh message is consumed, then wait a bounded period for natural process exit. Current `main()` handles only the expected top-level `KeyboardInterrupt`; async cancellation is still allowed to unwind lower layers. The application assembly owns final Kafka flush in a `finally` block, but this smoke-check does not directly instrument or observe the internal `client.flush()` call.
+
+Expected current `SIGINT` result:
+
+- Producer exit status `0`.
+- No uncaught `asyncio.exceptions.CancelledError` traceback.
+- No uncaught `KeyboardInterrupt` traceback.
+
+Before `ce1f8d0`, this bounded smoke-check ended with status `-2` and cancellation/`KeyboardInterrupt` output. That is historical behavior, not the current expectation.
 
 Do not require GNU `timeout` for this check on macOS. Use a terminal, shell job control, or a small local orchestration command to bound the producer externally.
 
@@ -148,15 +156,17 @@ The observed `ingested_at_ms - event_time_ms` difference is only an observation.
 
 ## Successful Example
 
-One successful bounded smoke-check used group `binance-entrypoint-smoke-1784202344` and consumed:
+One successful bounded graceful-finalization smoke-check used group `binance-graceful-shutdown-smoke-1784206694` and consumed:
 
 ```text
-binance:BTCUSDT	{"exchange":"binance","symbol":"BTCUSDT","trade_id":"6510458765","price":"64262.09000000","quantity":"0.00085000","event_time_ms":1784202348710,"ingested_at_ms":1784202348660}
+binance:ETHUSDT	{"exchange":"binance","symbol":"ETHUSDT","trade_id":"4215668937","price":"1873.22000000","quantity":"0.00400000","event_time_ms":1784206699177,"ingested_at_ms":1784206699136}
 ```
 
-The consumer exited with status `0` after one message. The producer was externally stopped with `SIGINT`; that subprocess run exited with status `-2` and showed `CancelledError` followed by `KeyboardInterrupt`.
+The consumer exited with status `0` after one message and wrote `Processed a total of 1 messages` to stderr. The producer process had PID `13564`, received `SIGINT`, exited with status `0`, wrote empty stdout/stderr, showed no `CancelledError`, showed no `KeyboardInterrupt` traceback, and required no forced cleanup.
 
-The live symbol, trade ID, price, quantity, timestamps, symbol sequence, and timestamp difference are variable. This is operational evidence, not an automated test expectation.
+That run observed approximately 9.892 seconds between `SIGINT` and process exit. The process exited naturally within the bounded wait, so this did not fail the smoke-check. Treat this as one operational observation, not a shutdown-latency guarantee or SLA. The run did not isolate whether the elapsed time was spent in WebSocket context shutdown, Kafka finalization, process orchestration, or waiting. Final Kafka flush has no explicit timeout yet.
+
+The live symbol, trade ID, price, quantity, timestamps, consumer group, PID, shutdown duration, symbol sequence, and timestamp difference are variable. This is operational evidence, not an automated test expectation.
 
 ## Cleanup
 
@@ -196,7 +206,11 @@ git status --short
 
 ## Current Limitations
 
-- No graceful shutdown or final flush policy.
+- `SIGINT` is handled as expected top-level operator shutdown, but there is no explicit signal-registration framework.
+- SIGTERM handling is not implemented or tested.
+- Second-`SIGINT` or escalation behavior is not implemented or tested.
+- Final Kafka flush has no explicit timeout.
+- The final flush return value is ignored, and undelivered-message reporting does not exist.
 - No retry or reconnect behavior.
 - No delivery callback acknowledgement handling.
 - Per-message flush remains enabled.

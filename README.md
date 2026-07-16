@@ -35,13 +35,15 @@ Implemented foundation:
 - Reusable Binance receiver session and sequential publish loop
 - Kafka message preparation and injectable publisher wrapper
 - Executable Binance-to-Kafka producer: `python -m jobs.producer.binance_producer`
+- Application-owned final Kafka flush and clean top-level `SIGINT` handling for the executable producer
 - Local Kafka service configuration
 - One-event synthetic Kafka producer smoke-check for `market.trades.raw`
 - Bounded manual end-to-end smoke-check from real Binance WebSocket to Kafka consumer
 
 Not implemented yet:
 
-- Graceful shutdown and final flush policy
+- Final flush timeout or return-value handling
+- SIGTERM handling, second-interrupt escalation, and broader shutdown orchestration
 - Retry, reconnect, delivery callbacks, logging, and metrics
 - Producer container execution and throughput tuning
 - Spark, Iceberg, ClickHouse, dashboard, and data-quality jobs
@@ -74,7 +76,7 @@ Run tests:
 make test
 ```
 
-Current test status: 83 unit tests pass locally with `make test`.
+Current test status: 87 unit tests pass locally with `make test`.
 
 ## Manual Smoke Checks
 
@@ -92,4 +94,4 @@ The executable producer reads `KAFKA_BOOTSTRAP_SERVERS`; for host-local Kafka us
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092 python -m jobs.producer.binance_producer
 ```
 
-The producer is a permanent process and currently requires external termination. Graceful shutdown, retry/reconnect, delivery acknowledgement handling, and throughput optimization are not implemented yet.
+The producer is a permanent process. Clean operator `SIGINT` handling and application-owned final Kafka flush are implemented and have passed a bounded live smoke-check. Retry/reconnect, delivery acknowledgement handling, final flush timeout or return-value handling, SIGTERM handling, and throughput optimization are not implemented yet.

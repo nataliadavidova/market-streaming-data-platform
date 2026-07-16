@@ -25,11 +25,14 @@ Completed:
 - Binance publisher runtime that owns the receiver session around the loop.
 - Reusable Kafka client factory.
 - Executable Binance producer entrypoint: `python -m jobs.producer.binance_producer`.
+- Application-owned final Kafka flush in the executable producer assembly.
+- Clean top-level `SIGINT`/`KeyboardInterrupt` handling for expected operator shutdown.
 - Local Kafka service with Docker Compose.
 - Local Kafka Makefile commands for service lifecycle, topic creation, synthetic publish, and bounded consume-one checks.
 - Synthetic one-event Kafka producer smoke-check.
 - Manual live one-shot Binance WebSocket smoke-check.
 - Successful bounded live Binance-to-Kafka smoke-check through the executable producer and Kafka consumer.
+- Successful bounded live graceful-finalization smoke-check confirming fresh Binance-to-Kafka delivery, producer exit status `0`, and no cancellation or `KeyboardInterrupt` traceback.
 - Unit-test CI with GitHub Actions.
 
 In progress:
@@ -38,7 +41,10 @@ In progress:
 
 Planned:
 
-- Graceful shutdown and final flush policy.
+- Shutdown-latency investigation.
+- Final flush timeout and return-value checking.
+- Undelivered-message reporting.
+- SIGTERM handling and second-`SIGINT` escalation behavior.
 - Retry and reconnect behavior.
 - Delivery acknowledgement handling.
 - Remove per-message flush and improve throughput.

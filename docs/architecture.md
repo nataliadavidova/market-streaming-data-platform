@@ -47,7 +47,7 @@ Implemented:
 - `receive_and_publish_one_binance_trade(receiver, publisher)` performs one receive, one `KafkaMessage` preparation, and one synchronous publish.
 - `run_binance_trade_publish_loop(receiver, publisher)` provides permanent sequential repetition over already-created dependencies.
 - `run_binance_trade_publisher(config, publisher)` owns the Binance receiver-session lifecycle around the publish loop.
-- `python -m jobs.producer.binance_producer` loads config, reads `KAFKA_BOOTSTRAP_SERVERS`, creates the Kafka client and `KafkaPublisher`, and starts the Binance publisher runtime.
+- `python -m jobs.producer.binance_producer` loads config, reads `KAFKA_BOOTSTRAP_SERVERS`, creates the Kafka client and `KafkaPublisher`, starts the Binance publisher runtime, finalizes the Kafka client in application assembly, and treats top-level `KeyboardInterrupt` as expected operator shutdown.
 - Local Kafka runs through Docker Compose.
 - Makefile commands support local Kafka up/down, topic creation, one synthetic producer smoke publish, and bounded consume-one checks.
 - GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
@@ -58,9 +58,9 @@ Implemented executable producer flow:
 
 Current lifecycle ownership:
 
-- `main()`: environment lookup, host default for Kafka bootstrap, default config path, and `asyncio.run(...)`.
-- Configured application assembly: config loading, Kafka client construction, and `KafkaPublisher` construction.
-- Runtime runner: Binance receiver-session lifecycle.
+- `main()`: environment lookup, host default for Kafka bootstrap, default config path, `asyncio.run(...)`, and catching only top-level `KeyboardInterrupt`.
+- `run_configured_binance_producer(...)`: config loading, concrete Kafka client construction, `KafkaPublisher` construction, invoking the Binance runtime, and finalizing the concrete Kafka client in a `finally` block.
+- `run_binance_trade_publisher(...)`: Binance receiver-session lifecycle.
 - Publish loop: permanent sequential repetition.
 - Per-event operation: one receive and one publish.
 - `KafkaPublisher`: topic selection, send, and current per-message flush behavior.
@@ -72,7 +72,8 @@ Current operational semantics:
 - Kafka publishing is synchronous.
 - Per-message flush remains enabled.
 - Exceptions propagate naturally.
-- External termination currently has no graceful-shutdown guarantee.
+- On `SIGINT`, Python `asyncio.run(...)` cancels the main task, cancellation unwinds the Binance/WebSocket contexts, application assembly performs a final Kafka flush, `asyncio.run(...)` surfaces `KeyboardInterrupt`, and `main()` treats that top-level interruption as expected operator shutdown.
+- The implemented shutdown path is not a complete production shutdown framework.
 
 Manual checks completed:
 
@@ -81,14 +82,15 @@ Manual checks completed:
 - Synthetic one-event producer smoke-check has published to local Kafka.
 - Bounded local console consume-check has read the synthetic event from Kafka.
 - Manual live one-shot Binance smoke-check has connected to Binance, received one real combined-stream trade message, parsed it into `TradeEvent`, and closed normally.
-- Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published one fresh real Binance `TradeEvent` to `market.trades.raw`, and consumed it with a fresh latest-offset consumer group.
+- Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published one fresh real Binance `TradeEvent` to `market.trades.raw`, consumed it with a fresh latest-offset consumer group, and verified clean `SIGINT` process exit with no cancellation or `KeyboardInterrupt` traceback.
 
 ## Planned Target Architecture
 
 Planned but not implemented:
 
 - Retry and reconnect behavior.
-- Graceful shutdown for long-running producer execution.
+- Shutdown latency investigation, final flush timeout handling, flush return-value checking, and undelivered-message reporting.
+- SIGTERM handling and second-interrupt escalation behavior.
 - Delivery acknowledgement handling.
 - Producer container execution.
 - Throughput optimization and per-message flush removal.
