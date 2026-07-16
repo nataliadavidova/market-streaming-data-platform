@@ -4,7 +4,10 @@ import asyncio
 
 import pytest
 
-from jobs.producer.binance_publisher import receive_and_publish_one_binance_trade
+from jobs.producer.binance_publisher import (
+    receive_and_publish_one_binance_trade,
+    run_binance_trade_publish_loop,
+)
 from jobs.producer.events import TradeEvent
 from jobs.producer.kafka import KafkaMessage
 from jobs.producer.publisher import KafkaPublisher
@@ -28,6 +31,32 @@ class FakeBinanceTradeEventReceiver:
             raise AssertionError("test receiver must define an event or error")
 
         return self.event
+
+
+class SequenceStoppingReceiver:
+    def __init__(self, events: list[TradeEvent], error: Exception) -> None:
+        self._events = events
+        self._error = error
+        self.receive_count = 0
+
+    async def receive(self) -> TradeEvent:
+        self.receive_count += 1
+        if self._events:
+            return self._events.pop(0)
+
+        raise self._error
+
+
+class WaitingReceiver:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.receive_count = 0
+
+    async def receive(self) -> TradeEvent:
+        self.receive_count += 1
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("receive should be cancelled before returning")
 
 
 class FakeKafkaClient:
@@ -135,3 +164,56 @@ def test_receive_and_publish_one_binance_trade_publish_error_propagates() -> Non
         asyncio.run(receive_and_publish_one_binance_trade(receiver, FailingPublisher()))
 
     assert receiver.receive_count == 1
+
+
+def test_run_binance_trade_publish_loop_repeats_until_exception() -> None:
+    class StopLoop(Exception):
+        pass
+
+    first = valid_trade_event()
+    second = TradeEvent.model_validate(
+        {
+            "exchange": "binance",
+            "symbol": "ETHUSDT",
+            "trade_id": "67890",
+            "price": "3420.55",
+            "quantity": "0.25",
+            "event_time_ms": 1735689600345,
+            "ingested_at_ms": 1735689600789,
+        }
+    )
+    receiver = SequenceStoppingReceiver([first, second], StopLoop("stop"))
+    publisher = RecordingPublisher()
+
+    with pytest.raises(StopLoop, match="stop"):
+        asyncio.run(run_binance_trade_publish_loop(receiver, publisher))
+
+    assert receiver.receive_count == 3
+    assert publisher.messages == [
+        KafkaMessage(
+            key="binance:BTCUSDT",
+            value=first.to_json_message(),
+        ),
+        KafkaMessage(
+            key="binance:ETHUSDT",
+            value=second.to_json_message(),
+        ),
+    ]
+
+
+def test_run_binance_trade_publish_loop_propagates_cancellation() -> None:
+    receiver = WaitingReceiver()
+    publisher = RecordingPublisher()
+
+    async def run_and_cancel() -> None:
+        task = asyncio.create_task(run_binance_trade_publish_loop(receiver, publisher))
+        await receiver.started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_and_cancel())
+
+    assert receiver.receive_count == 1
+    assert publisher.messages == []

@@ -16,3 +16,11 @@ async def receive_and_publish_one_binance_trade(
     publisher.publish_message(message)
 
     return event
+
+
+async def run_binance_trade_publish_loop(
+    receiver: BinanceTradeEventReceiver,
+    publisher: KafkaPublisher,
+) -> None:
+    while True:
+        await receive_and_publish_one_binance_trade(receiver, publisher)
