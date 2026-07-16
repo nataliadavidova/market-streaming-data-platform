@@ -114,13 +114,16 @@ Current local service config:
 - The executable Binance-to-Kafka producer entrypoint is implemented: `python -m jobs.producer.binance_producer`.
 - The manual bounded Binance-to-Kafka E2E smoke-check has passed. A fresh real Binance `TradeEvent` was published to `market.trades.raw` and consumed with a unique latest-offset consumer group. Consumer freshness requires a unique group, `auto.offset.reset=latest`, and starting the consumer before the producer.
 - The Binance-to-Kafka E2E smoke-check is documented in `docs/runbooks/binance-kafka-e2e-smoke-check.md`.
-- Latest implementation milestone: `ce1f8d0 Add Binance producer graceful finalization`.
+- Latest implementation milestone: `a99fd3e Bound Kafka producer final flush`.
 - Application-level final Kafka flush is implemented in `run_configured_binance_producer(...)`.
+- `KafkaProducerClient.flush(timeout=None)` accepts an optional timeout and returns the number of messages still queued.
+- Final application-level Kafka flush is bounded to 5.0 seconds and raises `KafkaFinalizationError` if messages remain queued.
 - The live graceful-finalization E2E smoke-check has passed. A fresh real `ETHUSDT` event was consumed from `market.trades.raw`; the producer received `SIGINT`, exited with status `0`, wrote empty stdout/stderr, and showed no `CancelledError` or `KeyboardInterrupt` traceback.
 - The observed shutdown duration in that run was approximately 9.892 seconds. That is an operational observation, not a guarantee or diagnosed cause.
 - Documentation is split into `README.md`, `docs/architecture.md`, `docs/roadmap.md`, and smoke-check runbooks under `docs/runbooks/`.
 - Retry and reconnect behavior has not been implemented yet.
-- Final Kafka flush timeout and return-value handling have not been implemented yet.
+- Per-message Kafka flush still uses default library behavior with no explicit timeout, and its return value remains ignored.
+- WebSocket `close_timeout` remains unchanged. The approximately 9.892-second shutdown observation is still not explained by the Kafka finalization change; the strongest current hypothesis remains the default WebSocket close timeout, but that has not been directly proven.
 - SIGTERM handling and second-interrupt escalation behavior have not been implemented yet.
 - Delivery callback acknowledgement handling has not been implemented yet.
 - Throughput optimization and per-message flush removal have not been implemented yet.
@@ -228,9 +231,9 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Inspect and design the smallest shutdown-latency and bounded Kafka-finalization slice. Focus on whether final flush needs a timeout, return-value checking, or undelivered-message reporting without adding retry/reconnect, delivery callbacks, logging, metrics, batching, or throughput changes in the same step.
+- Inspect and design WebSocket `close_timeout` wiring and a focused live shutdown comparison. Keep it separate from retry/reconnect, delivery callbacks, logging, metrics, batching, and signal-management work.
 
 Current test suite:
 
-- 87 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance URL construction, Binance trade parsing, Binance combined-message parsing, reusable WebSocket receiving with receive-boundary timestamps, one-shot and reusable Binance receive-and-parse composition, Binance-to-Kafka publish operations, the executable producer assembly and finalization, Kafka message contract preparation, Kafka publisher wrapper behavior, the Confluent Kafka producer adapter and factory, and the one-event producer smoke publisher.
+- 92 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance URL construction, Binance trade parsing, Binance combined-message parsing, reusable WebSocket receiving with receive-boundary timestamps, one-shot and reusable Binance receive-and-parse composition, Binance-to-Kafka publish operations, the executable producer assembly and bounded finalization, Kafka message contract preparation, Kafka publisher wrapper behavior, the Confluent Kafka producer adapter and factory, and the one-event producer smoke publisher.
 - `make test` passes locally.

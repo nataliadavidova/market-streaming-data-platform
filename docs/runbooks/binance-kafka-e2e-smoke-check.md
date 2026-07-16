@@ -110,7 +110,11 @@ python -m jobs.producer.binance_producer
 
 The producer is a permanent process. It does not exit after one message. After the bounded consumer receives one fresh message, stop the producer externally.
 
-Send `SIGINT` to the producer after one fresh message is consumed, then wait a bounded period for natural process exit. Current `main()` handles only the expected top-level `KeyboardInterrupt`; async cancellation is still allowed to unwind lower layers. The application assembly owns final Kafka flush in a `finally` block, but this smoke-check does not directly instrument or observe the internal `client.flush()` call.
+Send `SIGINT` to the producer after one fresh message is consumed, then wait a bounded period for natural process exit. Current `main()` handles only the expected top-level `KeyboardInterrupt`; async cancellation is still allowed to unwind lower layers. The application assembly owns final Kafka flush in a `finally` block.
+
+The final application-level Kafka flush is bounded with `FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS = 5.0`. If messages remain queued after that finalization timeout, the producer raises `KafkaFinalizationError` and exits as a failed process. This policy applies only to the final application flush. Per-message flushes still use the default library behavior with no explicit timeout.
+
+This smoke-check does not directly instrument or observe the internal `client.flush()` call unless separate runtime instrumentation is added. Total shutdown can still exceed five seconds because Binance/WebSocket async context cleanup happens before Kafka finalization.
 
 Expected current `SIGINT` result:
 
@@ -164,7 +168,7 @@ binance:ETHUSDT	{"exchange":"binance","symbol":"ETHUSDT","trade_id":"4215668937"
 
 The consumer exited with status `0` after one message and wrote `Processed a total of 1 messages` to stderr. The producer process had PID `13564`, received `SIGINT`, exited with status `0`, wrote empty stdout/stderr, showed no `CancelledError`, showed no `KeyboardInterrupt` traceback, and required no forced cleanup.
 
-That run observed approximately 9.892 seconds between `SIGINT` and process exit. The process exited naturally within the bounded wait, so this did not fail the smoke-check. Treat this as one operational observation, not a shutdown-latency guarantee or SLA. The run did not isolate whether the elapsed time was spent in WebSocket context shutdown, Kafka finalization, process orchestration, or waiting. Final Kafka flush has no explicit timeout yet.
+That run observed approximately 9.892 seconds between `SIGINT` and process exit. The process exited naturally within the bounded wait, so this did not fail the smoke-check. Treat this as one operational observation, not a shutdown-latency guarantee or SLA. The run did not isolate whether the elapsed time was spent in WebSocket context shutdown, Kafka finalization, process orchestration, or waiting. The bounded Kafka finalization change does not invalidate or explain that observation; the strongest current hypothesis remains the default WebSocket close-timeout path, which has not been directly instrumented.
 
 The live symbol, trade ID, price, quantity, timestamps, consumer group, PID, shutdown duration, symbol sequence, and timestamp difference are variable. This is operational evidence, not an automated test expectation.
 
@@ -209,10 +213,10 @@ git status --short
 - `SIGINT` is handled as expected top-level operator shutdown, but there is no explicit signal-registration framework.
 - SIGTERM handling is not implemented or tested.
 - Second-`SIGINT` or escalation behavior is not implemented or tested.
-- Final Kafka flush has no explicit timeout.
-- The final flush return value is ignored, and undelivered-message reporting does not exist.
+- Final application-level Kafka flush has a 5.0-second timeout and raises `KafkaFinalizationError` if messages remain queued.
+- Per-message Kafka flush still has no explicit timeout, and its return value remains ignored.
+- Delivery callbacks and undelivered-message logging or metrics do not exist.
 - No retry or reconnect behavior.
-- No delivery callback acknowledgement handling.
 - Per-message flush remains enabled.
 - No high-throughput validation.
 - No containerized producer execution.

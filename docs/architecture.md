@@ -43,6 +43,8 @@ Implemented:
 - A reusable Binance trade receiver session keeps one WebSocket connection open and returns parsed `TradeEvent` objects through repeated explicit receive calls.
 - Kafka message preparation creates deterministic key/value payloads from `TradeEvent`.
 - `KafkaPublisher` and `ConfluentKafkaProducerClient` provide injectable publishing boundaries.
+- `KafkaProducerClient.flush(timeout=None)` returns the number of messages still queued after a flush attempt.
+- `ConfluentKafkaProducerClient.flush()` preserves no-argument library behavior, while explicit flush timeouts are forwarded to the wrapped Confluent producer.
 - `build_kafka_client(bootstrap_servers)` constructs the concrete Confluent Kafka client from explicit deployment configuration.
 - `receive_and_publish_one_binance_trade(receiver, publisher)` performs one receive, one `KafkaMessage` preparation, and one synchronous publish.
 - `run_binance_trade_publish_loop(receiver, publisher)` provides permanent sequential repetition over already-created dependencies.
@@ -65,14 +67,29 @@ Current lifecycle ownership:
 - Per-event operation: one receive and one publish.
 - `KafkaPublisher`: topic selection, send, and current per-message flush behavior.
 
+Current Kafka finalization contract:
+
+- Generic Kafka adapter code does not own timeout policy.
+- The executable application assembly owns the final Kafka flush because it creates the concrete client.
+- Final application flush uses `FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS = 5.0`.
+- Zero remaining messages means finalization succeeded.
+- Nonzero remaining messages raise `KafkaFinalizationError`.
+- If runtime succeeds and finalization succeeds, the application returns normally.
+- If runtime succeeds and messages remain queued, `KafkaFinalizationError` propagates.
+- If runtime fails and finalization succeeds, the original runtime exception propagates.
+- If runtime fails and messages remain queued, `KafkaFinalizationError` is outward and the runtime failure remains in normal Python exception context.
+- If `flush` itself raises, that exception propagates through normal `finally` semantics.
+
 Current operational semantics:
 
 - One reusable Binance WebSocket connection is kept open during the producer runtime.
 - Processing is sequential and preserves event order within the application path.
 - Kafka publishing is synchronous.
-- Per-message flush remains enabled.
+- Per-message flush remains enabled. `KafkaPublisher.publish_message(..., flush=True)` still calls `client.flush()` with no explicit timeout after every message, and that return value remains ignored.
+- Only the application-level final flush currently uses the 5.0-second timeout.
 - Exceptions propagate naturally.
 - On `SIGINT`, Python `asyncio.run(...)` cancels the main task, cancellation unwinds the Binance/WebSocket contexts, application assembly performs a final Kafka flush, `asyncio.run(...)` surfaces `KeyboardInterrupt`, and `main()` treats that top-level interruption as expected operator shutdown.
+- Total process shutdown is not guaranteed within five seconds because Binance/WebSocket cleanup occurs before final Kafka finalization.
 - The implemented shutdown path is not a complete production shutdown framework.
 
 Manual checks completed:
@@ -89,11 +106,13 @@ Manual checks completed:
 Planned but not implemented:
 
 - Retry and reconnect behavior.
-- Shutdown latency investigation, final flush timeout handling, flush return-value checking, and undelivered-message reporting.
+- WebSocket close-timeout tuning or instrumentation.
+- Shutdown-stage timing.
+- Per-message flush timeout, per-message flush removal, and throughput optimization.
 - SIGTERM handling and second-interrupt escalation behavior.
 - Delivery acknowledgement handling.
 - Producer container execution.
-- Throughput optimization and per-message flush removal.
+- Delivery or undelivered-message logging and metrics.
 - Spark Structured Streaming ingestion from Kafka.
 - Streaming normalization and data-quality checks.
 - Iceberg table writes on S3-compatible storage.

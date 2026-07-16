@@ -26,6 +26,10 @@ Completed:
 - Reusable Kafka client factory.
 - Executable Binance producer entrypoint: `python -m jobs.producer.binance_producer`.
 - Application-owned final Kafka flush in the executable producer assembly.
+- Timeout-aware `KafkaProducerClient.flush` contract.
+- Timeout forwarding in `ConfluentKafkaProducerClient`.
+- Bounded application-level final Kafka flush.
+- Explicit `KafkaFinalizationError` when messages remain queued after the finalization timeout.
 - Clean top-level `SIGINT`/`KeyboardInterrupt` handling for expected operator shutdown.
 - Local Kafka service with Docker Compose.
 - Local Kafka Makefile commands for service lifecycle, topic creation, synthetic publish, and bounded consume-one checks.
@@ -33,6 +37,7 @@ Completed:
 - Manual live one-shot Binance WebSocket smoke-check.
 - Successful bounded live Binance-to-Kafka smoke-check through the executable producer and Kafka consumer.
 - Successful bounded live graceful-finalization smoke-check confirming fresh Binance-to-Kafka delivery, producer exit status `0`, and no cancellation or `KeyboardInterrupt` traceback.
+- Focused unit coverage for bounded Kafka finalization.
 - Unit-test CI with GitHub Actions.
 
 In progress:
@@ -42,12 +47,14 @@ In progress:
 Planned:
 
 - Shutdown-latency investigation.
-- Final flush timeout and return-value checking.
-- Undelivered-message reporting.
+- WebSocket close-timeout tuning or instrumentation.
+- Shutdown-stage timing.
+- Per-message flush timeout or removal.
+- Delivery or undelivered-message logging and metrics.
 - SIGTERM handling and second-`SIGINT` escalation behavior.
 - Retry and reconnect behavior.
 - Delivery acknowledgement handling.
-- Remove per-message flush and improve throughput.
+- Improve throughput.
 - Logging and metrics.
 - Producer container and deployment configuration.
 - Gap detection, backfill, and deduplication strategy.
