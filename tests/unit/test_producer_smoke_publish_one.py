@@ -14,9 +14,9 @@ class FakeKafkaClient:
         self.sent_messages.append((topic, key, value))
         return object()
 
-    def flush(self) -> object:
+    def flush(self, timeout: float | None = None) -> int:
         self.flush_count += 1
-        return object()
+        return 0
 
 
 def test_publish_one_synthetic_trade_event_publishes_one_prepared_event() -> None:

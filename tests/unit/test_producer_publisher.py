@@ -8,14 +8,16 @@ class FakeKafkaClient:
     def __init__(self) -> None:
         self.sent_messages: list[tuple[str, bytes, bytes]] = []
         self.flush_count = 0
+        self.flush_timeouts: list[float | None] = []
 
     def send(self, topic: str, key: bytes, value: bytes) -> object:
         self.sent_messages.append((topic, key, value))
         return object()
 
-    def flush(self) -> object:
+    def flush(self, timeout: float | None = None) -> int:
         self.flush_count += 1
-        return object()
+        self.flush_timeouts.append(timeout)
+        return 0
 
 
 def test_kafka_publisher_sends_message_to_expected_topic() -> None:
@@ -45,6 +47,7 @@ def test_kafka_publisher_flushes_by_default() -> None:
     publisher.publish_message(KafkaMessage(key="binance:BTCUSDT", value="{}"))
 
     assert client.flush_count == 1
+    assert client.flush_timeouts == [None]
 
 
 def test_kafka_publisher_can_skip_flush_explicitly() -> None:

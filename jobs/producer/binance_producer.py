@@ -12,6 +12,11 @@ from jobs.producer.publisher import KafkaPublisher
 DEFAULT_CONFIG_PATH = "config/market_symbols.yaml"
 KAFKA_BOOTSTRAP_SERVERS_ENV = "KAFKA_BOOTSTRAP_SERVERS"
 DEFAULT_KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS = 5.0
+
+
+class KafkaFinalizationError(RuntimeError):
+    """Raised when Kafka messages remain queued after finalization."""
 
 
 async def run_configured_binance_producer(
@@ -29,7 +34,12 @@ async def run_configured_binance_producer(
 
         await run_binance_trade_publisher(config, publisher)
     finally:
-        client.flush()
+        remaining_messages = client.flush(FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS)
+        if remaining_messages:
+            raise KafkaFinalizationError(
+                "Kafka finalization timed out with "
+                f"{remaining_messages} message(s) still queued"
+            )
 
 
 def main() -> None:

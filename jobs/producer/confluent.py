@@ -19,8 +19,11 @@ class ConfluentKafkaProducerClient:
     def send(self, topic: str, key: bytes, value: bytes) -> object:
         return self._producer.produce(topic=topic, key=key, value=value)
 
-    def flush(self) -> object:
-        return self._producer.flush()
+    def flush(self, timeout: float | None = None) -> int:
+        if timeout is None:
+            return self._producer.flush()
+
+        return self._producer.flush(timeout)
 
 
 def build_kafka_client(bootstrap_servers: str) -> ConfluentKafkaProducerClient:

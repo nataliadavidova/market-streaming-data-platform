@@ -10,15 +10,22 @@ from jobs.producer.config import ProducerConfig
 
 
 class FakeKafkaClient:
-    def __init__(self, events: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[str] | None = None,
+        remaining_messages: int = 0,
+    ) -> None:
         self.flush_count = 0
         self.events = events
+        self.flush_timeouts: list[float | None] = []
+        self.remaining_messages = remaining_messages
 
-    def flush(self) -> object:
+    def flush(self, timeout: float | None = None) -> int:
         self.flush_count += 1
+        self.flush_timeouts.append(timeout)
         if self.events is not None:
             self.events.append("client flush")
-        return object()
+        return self.remaining_messages
 
 
 def valid_producer_config() -> ProducerConfig:
@@ -112,6 +119,9 @@ def test_run_configured_binance_producer_assembles_runtime(monkeypatch) -> None:
     }
     assert events == ["runner start", "runner finish", "client flush"]
     assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
 
 
 def test_run_configured_binance_producer_flushes_after_runtime_failure(
@@ -172,6 +182,125 @@ def test_run_configured_binance_producer_flushes_after_runtime_failure(
     assert runner_call_count == 1
     assert events == ["runner start", "runner raise", "client flush"]
     assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
+
+
+def test_run_configured_binance_producer_raises_when_final_flush_leaves_messages(
+    monkeypatch,
+) -> None:
+    config = valid_producer_config()
+    events: list[str] = []
+    client = FakeKafkaClient(events, remaining_messages=2)
+    publisher = object()
+
+    async def fake_run_binance_trade_publisher(
+        received_config: ProducerConfig,
+        received_publisher: object,
+    ) -> None:
+        events.append("runner start")
+        assert received_config is config
+        assert received_publisher is publisher
+        events.append("runner finish")
+
+    monkeypatch.setattr(
+        binance_producer,
+        "load_producer_config",
+        lambda config_path: config,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "build_kafka_client",
+        lambda bootstrap_servers: client,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "KafkaPublisher",
+        lambda *, topic, client: publisher,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "run_binance_trade_publisher",
+        fake_run_binance_trade_publisher,
+    )
+
+    with pytest.raises(
+        binance_producer.KafkaFinalizationError,
+        match="2 message\\(s\\) still queued",
+    ):
+        asyncio.run(
+            binance_producer.run_configured_binance_producer(
+                "custom/config.yaml",
+                "broker.example:19092",
+            )
+        )
+
+    assert events == ["runner start", "runner finish", "client flush"]
+    assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
+
+
+def test_run_configured_binance_producer_finalization_error_preserves_runtime_context(
+    monkeypatch,
+) -> None:
+    class RuntimeFailure(Exception):
+        pass
+
+    config = valid_producer_config()
+    events: list[str] = []
+    client = FakeKafkaClient(events, remaining_messages=3)
+    publisher = object()
+    error = RuntimeFailure("runtime failed")
+
+    async def fake_run_binance_trade_publisher(
+        received_config: ProducerConfig,
+        received_publisher: object,
+    ) -> None:
+        events.append("runner start")
+        assert received_config is config
+        assert received_publisher is publisher
+        events.append("runner raise")
+        raise error
+
+    monkeypatch.setattr(
+        binance_producer,
+        "load_producer_config",
+        lambda config_path: config,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "build_kafka_client",
+        lambda bootstrap_servers: client,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "KafkaPublisher",
+        lambda *, topic, client: publisher,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "run_binance_trade_publisher",
+        fake_run_binance_trade_publisher,
+    )
+
+    with pytest.raises(binance_producer.KafkaFinalizationError) as exc_info:
+        asyncio.run(
+            binance_producer.run_configured_binance_producer(
+                "custom/config.yaml",
+                "broker.example:19092",
+            )
+        )
+
+    assert "3 message(s) still queued" in str(exc_info.value)
+    assert exc_info.value.__context__ is error
+    assert events == ["runner start", "runner raise", "client flush"]
+    assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
 
 
 def test_run_configured_binance_producer_flushes_after_publisher_construction_failure(
@@ -219,6 +348,9 @@ def test_run_configured_binance_producer_flushes_after_publisher_construction_fa
 
     assert exc_info.value is error
     assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
     run_binance_trade_publisher.assert_not_awaited()
 
 

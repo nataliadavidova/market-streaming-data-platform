@@ -9,7 +9,7 @@ class KafkaProducerClient(Protocol):
     def send(self, topic: str, key: bytes, value: bytes) -> object:
         ...
 
-    def flush(self) -> object:
+    def flush(self, timeout: float | None = None) -> int:
         ...
 
 

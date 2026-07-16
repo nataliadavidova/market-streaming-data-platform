@@ -14,6 +14,9 @@ class FakeConfluentProducer:
         FakeConfluentProducer.created_with_config = config
         self.produced_messages: list[dict[str, object]] = []
         self.flush_count = 0
+        self.flush_arguments: list[tuple[float, ...]] = []
+        self.flush_remaining_messages = 0
+        self.flush_error: Exception | None = None
 
     def produce(self, *, topic: str, key: bytes, value: bytes) -> object:
         self.produced_messages.append(
@@ -25,9 +28,12 @@ class FakeConfluentProducer:
         )
         return object()
 
-    def flush(self) -> object:
+    def flush(self, *args: float) -> int:
         self.flush_count += 1
-        return object()
+        self.flush_arguments.append(args)
+        if self.flush_error is not None:
+            raise self.flush_error
+        return self.flush_remaining_messages
 
 
 class FakeConfluentKafkaProducerClient:
@@ -45,9 +51,9 @@ class FakeConfluentKafkaProducerClient:
         self.send_count += 1
         return object()
 
-    def flush(self) -> object:
+    def flush(self, timeout: float | None = None) -> int:
         self.flush_count += 1
-        return object()
+        return 0
 
 
 def test_confluent_kafka_producer_client_creates_producer_with_config(
@@ -82,13 +88,63 @@ def test_confluent_kafka_producer_client_delegates_send_to_produce(
     ]
 
 
-def test_confluent_kafka_producer_client_delegates_flush(monkeypatch) -> None:
+def test_confluent_kafka_producer_client_delegates_flush_without_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(confluent, "Producer", FakeConfluentProducer)
+    client = ConfluentKafkaProducerClient({"bootstrap.servers": "localhost:9092"})
+    client._producer.flush_remaining_messages = 4
+
+    remaining_messages = client.flush()
+
+    assert client._producer.flush_count == 1
+    assert client._producer.flush_arguments == [()]
+    assert remaining_messages == 4
+
+
+def test_confluent_kafka_producer_client_delegates_explicit_none_flush_without_timeout(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(confluent, "Producer", FakeConfluentProducer)
     client = ConfluentKafkaProducerClient({"bootstrap.servers": "localhost:9092"})
 
-    client.flush()
+    client.flush(None)
 
     assert client._producer.flush_count == 1
+    assert client._producer.flush_arguments == [()]
+
+
+def test_confluent_kafka_producer_client_delegates_flush_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(confluent, "Producer", FakeConfluentProducer)
+    client = ConfluentKafkaProducerClient({"bootstrap.servers": "localhost:9092"})
+    client._producer.flush_remaining_messages = 2
+
+    remaining_messages = client.flush(5.0)
+
+    assert client._producer.flush_count == 1
+    assert client._producer.flush_arguments == [(5.0,)]
+    assert remaining_messages == 2
+
+
+def test_confluent_kafka_producer_client_flush_exception_propagates(
+    monkeypatch,
+) -> None:
+    class FlushError(Exception):
+        pass
+
+    monkeypatch.setattr(confluent, "Producer", FakeConfluentProducer)
+    client = ConfluentKafkaProducerClient({"bootstrap.servers": "localhost:9092"})
+    error = FlushError("flush failed")
+    client._producer.flush_error = error
+
+    try:
+        client.flush(5.0)
+    except FlushError as exc:
+        assert exc is error
+    else:
+        raise AssertionError("flush error did not propagate")
 
 
 def test_build_kafka_client_creates_client_with_bootstrap_servers(monkeypatch) -> None:
