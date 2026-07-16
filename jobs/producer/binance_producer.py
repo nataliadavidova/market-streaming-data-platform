@@ -20,12 +20,16 @@ async def run_configured_binance_producer(
 ) -> None:
     config = load_producer_config(config_path)
     client = build_kafka_client(bootstrap_servers)
-    publisher = KafkaPublisher(
-        topic=config.kafka.raw_topic,
-        client=client,
-    )
 
-    await run_binance_trade_publisher(config, publisher)
+    try:
+        publisher = KafkaPublisher(
+            topic=config.kafka.raw_topic,
+            client=client,
+        )
+
+        await run_binance_trade_publisher(config, publisher)
+    finally:
+        client.flush()
 
 
 def main() -> None:
@@ -33,12 +37,15 @@ def main() -> None:
         KAFKA_BOOTSTRAP_SERVERS_ENV,
         DEFAULT_KAFKA_BOOTSTRAP_SERVERS,
     )
-    asyncio.run(
-        run_configured_binance_producer(
-            DEFAULT_CONFIG_PATH,
-            bootstrap_servers,
+    try:
+        asyncio.run(
+            run_configured_binance_producer(
+                DEFAULT_CONFIG_PATH,
+                bootstrap_servers,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        return
 
 
 if __name__ == "__main__":

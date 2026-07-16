@@ -9,6 +9,18 @@ from jobs.producer import binance_producer
 from jobs.producer.config import ProducerConfig
 
 
+class FakeKafkaClient:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.flush_count = 0
+        self.events = events
+
+    def flush(self) -> object:
+        self.flush_count += 1
+        if self.events is not None:
+            self.events.append("client flush")
+        return object()
+
+
 def valid_producer_config() -> ProducerConfig:
     return ProducerConfig.model_validate(
         {
@@ -30,12 +42,21 @@ def valid_producer_config() -> ProducerConfig:
 
 def test_run_configured_binance_producer_assembles_runtime(monkeypatch) -> None:
     config = valid_producer_config()
-    client = object()
+    events: list[str] = []
+    client = FakeKafkaClient(events)
     publisher = object()
     loaded_config_path = None
     built_bootstrap_servers = None
     publisher_arguments = None
-    run_binance_trade_publisher = AsyncMock(return_value=None)
+
+    async def fake_run_binance_trade_publisher(
+        received_config: ProducerConfig,
+        received_publisher: object,
+    ) -> None:
+        events.append("runner start")
+        assert received_config is config
+        assert received_publisher is publisher
+        events.append("runner finish")
 
     def fake_load_producer_config(config_path: str) -> ProducerConfig:
         nonlocal loaded_config_path
@@ -73,7 +94,7 @@ def test_run_configured_binance_producer_assembles_runtime(monkeypatch) -> None:
     monkeypatch.setattr(
         binance_producer,
         "run_binance_trade_publisher",
-        run_binance_trade_publisher,
+        fake_run_binance_trade_publisher,
     )
 
     asyncio.run(
@@ -89,7 +110,116 @@ def test_run_configured_binance_producer_assembles_runtime(monkeypatch) -> None:
         "topic": "market.trades.raw",
         "client": client,
     }
-    run_binance_trade_publisher.assert_awaited_once_with(config, publisher)
+    assert events == ["runner start", "runner finish", "client flush"]
+    assert client.flush_count == 1
+
+
+def test_run_configured_binance_producer_flushes_after_runtime_failure(
+    monkeypatch,
+) -> None:
+    class RuntimeFailure(Exception):
+        pass
+
+    config = valid_producer_config()
+    events: list[str] = []
+    client = FakeKafkaClient(events)
+    publisher = object()
+    error = RuntimeFailure("runtime failed")
+    runner_call_count = 0
+
+    async def fake_run_binance_trade_publisher(
+        received_config: ProducerConfig,
+        received_publisher: object,
+    ) -> None:
+        nonlocal runner_call_count
+        runner_call_count += 1
+        events.append("runner start")
+        assert received_config is config
+        assert received_publisher is publisher
+        events.append("runner raise")
+        raise error
+
+    monkeypatch.setattr(
+        binance_producer,
+        "load_producer_config",
+        lambda config_path: config,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "build_kafka_client",
+        lambda bootstrap_servers: client,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "KafkaPublisher",
+        lambda *, topic, client: publisher,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "run_binance_trade_publisher",
+        fake_run_binance_trade_publisher,
+    )
+
+    with pytest.raises(RuntimeFailure) as exc_info:
+        asyncio.run(
+            binance_producer.run_configured_binance_producer(
+                "custom/config.yaml",
+                "broker.example:19092",
+            )
+        )
+
+    assert exc_info.value is error
+    assert runner_call_count == 1
+    assert events == ["runner start", "runner raise", "client flush"]
+    assert client.flush_count == 1
+
+
+def test_run_configured_binance_producer_flushes_after_publisher_construction_failure(
+    monkeypatch,
+) -> None:
+    class PublisherBuildError(Exception):
+        pass
+
+    config = valid_producer_config()
+    client = FakeKafkaClient()
+    error = PublisherBuildError("publisher build failed")
+    run_binance_trade_publisher = AsyncMock(return_value=None)
+
+    def fake_kafka_publisher(*, topic: str, client: object) -> object:
+        raise error
+
+    monkeypatch.setattr(
+        binance_producer,
+        "load_producer_config",
+        lambda config_path: config,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "build_kafka_client",
+        lambda bootstrap_servers: client,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "KafkaPublisher",
+        fake_kafka_publisher,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "run_binance_trade_publisher",
+        run_binance_trade_publisher,
+    )
+
+    with pytest.raises(PublisherBuildError) as exc_info:
+        asyncio.run(
+            binance_producer.run_configured_binance_producer(
+                "custom/config.yaml",
+                "broker.example:19092",
+            )
+        )
+
+    assert exc_info.value is error
+    assert client.flush_count == 1
+    run_binance_trade_publisher.assert_not_awaited()
 
 
 def test_run_configured_binance_producer_propagates_client_build_error(
@@ -180,6 +310,65 @@ def test_main_uses_default_bootstrap_servers(monkeypatch) -> None:
         "bootstrap_servers": "localhost:9092",
     }
     assert asyncio_run_arguments is coroutine
+
+
+def test_main_treats_keyboard_interrupt_as_expected_shutdown(monkeypatch) -> None:
+    coroutine = object()
+    run_arguments = None
+    asyncio_run_count = 0
+
+    def fake_run_configured_binance_producer(
+        config_path: str,
+        bootstrap_servers: str,
+    ) -> object:
+        nonlocal run_arguments
+        run_arguments = {
+            "config_path": config_path,
+            "bootstrap_servers": bootstrap_servers,
+        }
+        return coroutine
+
+    def fake_asyncio_run(awaitable: object) -> None:
+        nonlocal asyncio_run_count
+        asyncio_run_count += 1
+        assert awaitable is coroutine
+        raise KeyboardInterrupt
+
+    monkeypatch.delenv(binance_producer.KAFKA_BOOTSTRAP_SERVERS_ENV, raising=False)
+    monkeypatch.setattr(
+        binance_producer,
+        "run_configured_binance_producer",
+        fake_run_configured_binance_producer,
+    )
+    monkeypatch.setattr(binance_producer.asyncio, "run", fake_asyncio_run)
+
+    binance_producer.main()
+
+    assert run_arguments == {
+        "config_path": binance_producer.DEFAULT_CONFIG_PATH,
+        "bootstrap_servers": "localhost:9092",
+    }
+    assert asyncio_run_count == 1
+
+
+def test_main_does_not_suppress_unexpected_runtime_error(monkeypatch) -> None:
+    error = RuntimeError("unexpected")
+
+    monkeypatch.setattr(
+        binance_producer,
+        "run_configured_binance_producer",
+        lambda config_path, bootstrap_servers: object(),
+    )
+    monkeypatch.setattr(
+        binance_producer.asyncio,
+        "run",
+        lambda awaitable: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        binance_producer.main()
+
+    assert exc_info.value is error
 
 
 def test_main_forwards_configured_bootstrap_servers(monkeypatch) -> None:
