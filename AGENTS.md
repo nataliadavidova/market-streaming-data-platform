@@ -106,12 +106,22 @@ Current local service config:
 - One-shot Binance receive-and-parse composition is implemented. `receive_one_binance_trade_event(config)` builds the URL, receives one WebSocket message, parses it, and returns a `TradeEvent`.
 - The manual live one-shot Binance smoke-check has passed using the corrected timestamp API with `BTCUSDT`, `ETHUSDT`, and `SOLUSDT` configured. It verified the path from `config/market_symbols.yaml` through a real Binance WebSocket connection to one parsed `TradeEvent`, with normal one-shot connection close.
 - The Binance one-shot smoke-check is documented in `docs/runbooks/binance-one-shot-smoke-check.md`.
+- Reusable WebSocket and Binance trade receiver sessions are implemented. One Binance WebSocket connection can receive multiple parsed `TradeEvent` objects without reconnecting for each event.
+- Per-event Binance-to-Kafka publication is implemented through `receive_and_publish_one_binance_trade(receiver, publisher)`.
+- The permanent sequential publish loop is implemented through `run_binance_trade_publish_loop(receiver, publisher)`.
+- The Binance publisher runtime is implemented through `run_binance_trade_publisher(config, publisher)`, which owns the Binance receiver-session lifecycle around the permanent loop.
+- A reusable Kafka client factory, `build_kafka_client(bootstrap_servers)`, is implemented.
+- The executable Binance-to-Kafka producer entrypoint is implemented: `python -m jobs.producer.binance_producer`.
+- The manual bounded Binance-to-Kafka E2E smoke-check has passed. A fresh real Binance `TradeEvent` was published to `market.trades.raw` and consumed with a unique latest-offset consumer group. Consumer freshness requires a unique group, `auto.offset.reset=latest`, and starting the consumer before the producer.
+- The Binance-to-Kafka E2E smoke-check is documented in `docs/runbooks/binance-kafka-e2e-smoke-check.md`.
 - Documentation is split into `README.md`, `docs/architecture.md`, `docs/roadmap.md`, and smoke-check runbooks under `docs/runbooks/`.
-- The long-lived Binance WebSocket connection has not been implemented yet.
-- The continuous receive loop has not been implemented yet.
 - Retry and reconnect behavior has not been implemented yet.
 - Graceful shutdown has not been implemented yet.
-- Live Binance-to-Kafka publication has not been implemented yet.
+- Delivery callback acknowledgement handling has not been implemented yet.
+- Throughput optimization and per-message flush removal have not been implemented yet.
+- Logging and metrics have not been implemented yet.
+- Containerized producer execution has not been implemented yet.
+- The executable producer currently requires external termination. The successful E2E smoke-check stopped it with `SIGINT`; that produced `CancelledError` followed by `KeyboardInterrupt` and exit status `-2`, proving the data path but not graceful shutdown.
 - No Python consumer/read check has been added yet.
 
 Current producer modules:
@@ -124,6 +134,8 @@ Current producer modules:
 - `jobs/producer/confluent.py`
 - `jobs/producer/smoke_publish_one.py`
 - `jobs/producer/websocket.py`
+- `jobs/producer/binance_publisher.py`
+- `jobs/producer/binance_producer.py`
 
 Current implemented functions and models:
 
@@ -143,9 +155,17 @@ Current implemented functions and models:
 - `KafkaProducerClient`: protocol for injectable Kafka-like clients used by the publisher wrapper.
 - `KafkaPublisher`: wrapper that publishes prepared `KafkaMessage` objects to a configured topic by UTF-8 encoding the key and value. It uses an injectable client, so unit tests do not require a real Kafka broker.
 - `ConfluentKafkaProducerClient`: adapter that adapts `confluent_kafka.Producer` to the existing `KafkaProducerClient` protocol. `send(topic, key, value)` delegates to `Producer.produce(topic=topic, key=key, value=value)`, and `flush()` delegates to `Producer.flush()`.
+- `build_kafka_client(bootstrap_servers)`: creates a `ConfluentKafkaProducerClient` with explicit bootstrap servers.
 - `build_synthetic_trade_event()`: builds one deterministic synthetic `TradeEvent` for local producer smoke testing.
 - `publish_one_synthetic_trade_event(client, topic)`: publishes one synthetic trade event through an injectable Kafka producer client. The default topic is `market.trades.raw`.
 - `build_local_kafka_client(bootstrap_servers)`: creates a `ConfluentKafkaProducerClient` for the local Kafka bootstrap server. The default bootstrap server is `localhost:9092`.
+- `open_websocket_message_receiver(url, connect=None, clock=current_time_ms)`: opens one reusable WebSocket receiver session.
+- `open_binance_trade_event_receiver(config, connect=None, clock=current_time_ms)`: opens one reusable Binance trade-event receiver session.
+- `receive_and_publish_one_binance_trade(receiver, publisher)`: receives exactly one Binance `TradeEvent`, prepares one Kafka message, publishes it once, and returns the event.
+- `run_binance_trade_publish_loop(receiver, publisher)`: permanently repeats the one-event publish operation over already-created dependencies.
+- `run_binance_trade_publisher(config, publisher)`: owns the Binance receiver-session context and runs the permanent publish loop.
+- `run_configured_binance_producer(config_path, bootstrap_servers)`: loads producer config, builds the Kafka client, creates `KafkaPublisher` using `config.kafka.raw_topic`, and invokes the Binance publisher runtime.
+- `python -m jobs.producer.binance_producer`: executable producer command. It reads `KAFKA_BOOTSTRAP_SERVERS`, defaults to `localhost:9092` when absent, uses `config/market_symbols.yaml`, and runs the configured producer.
 
 ## Python environment
 
@@ -203,9 +223,9 @@ Python files should start with a short module-level docstring explaining what th
 
 Next likely small step:
 
-- Design and implement the smallest testable long-lived WebSocket receive primitive. It should open one connection and receive multiple messages without reconnecting for every event. Keep Binance parsing and Kafka publication outside that first primitive, and do not reuse the one-shot helper in a loop that opens a new connection for every message.
+- Inspect and design the smallest graceful shutdown/resource-finalization slice for the executable producer. Focus on how `SIGINT`/cancellation should close the Binance WebSocket context and finalize Kafka producer resources without adding retry/reconnect, delivery callbacks, logging, metrics, batching, or throughput changes in the same step.
 
 Current test suite:
 
-- 63 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance URL construction, Binance trade parsing, Binance combined-message parsing, single-message WebSocket receiving with receive-boundary timestamps, one-shot Binance receive-and-parse composition, Kafka message contract preparation, Kafka publisher wrapper behavior, the Confluent Kafka producer adapter, and the one-event producer smoke publisher.
+- 83 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance URL construction, Binance trade parsing, Binance combined-message parsing, reusable WebSocket receiving with receive-boundary timestamps, one-shot and reusable Binance receive-and-parse composition, Binance-to-Kafka publish operations, the executable producer assembly, Kafka message contract preparation, Kafka publisher wrapper behavior, the Confluent Kafka producer adapter and factory, and the one-event producer smoke publisher.
 - `make test` passes locally.

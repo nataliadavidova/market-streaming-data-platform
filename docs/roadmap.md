@@ -16,25 +16,35 @@ Completed:
 - Binance trade payload parsing.
 - Binance combined trade-stream URL construction from configured symbols and `ProducerConfig`.
 - Single-message WebSocket receiver with receive-boundary timestamp capture.
+- Reusable WebSocket receiver session for multiple receives over one connection.
 - Binance combined-message parser.
 - One-shot Binance receive-and-parse composition returning `TradeEvent`.
+- Reusable Binance trade receiver session.
+- Per-event Binance-to-Kafka publication operation.
+- Permanent sequential Binance publish loop.
+- Binance publisher runtime that owns the receiver session around the loop.
+- Reusable Kafka client factory.
+- Executable Binance producer entrypoint: `python -m jobs.producer.binance_producer`.
 - Local Kafka service with Docker Compose.
 - Local Kafka Makefile commands for service lifecycle, topic creation, synthetic publish, and bounded consume-one checks.
 - Synthetic one-event Kafka producer smoke-check.
 - Manual live one-shot Binance WebSocket smoke-check.
+- Successful bounded live Binance-to-Kafka smoke-check through the executable producer and Kafka consumer.
 - Unit-test CI with GitHub Actions.
 
 In progress:
 
-- Producer foundation for live Binance trade ingestion.
+- Producer hardening for long-running live Binance-to-Kafka execution.
 
 Planned:
 
-- Smallest testable long-lived WebSocket receive primitive.
-- Continuous Binance receive loop without reconnecting for every message.
+- Graceful shutdown and final flush policy.
 - Retry and reconnect behavior.
-- Graceful shutdown.
-- Live Binance-to-Kafka publication.
+- Delivery acknowledgement handling.
+- Remove per-message flush and improve throughput.
+- Logging and metrics.
+- Producer container and deployment configuration.
+- Gap detection, backfill, and deduplication strategy.
 - Spark Structured Streaming read from Kafka.
 - Stream parsing, validation, normalization, and basic data-quality checks.
 - Iceberg writes on S3-compatible storage.

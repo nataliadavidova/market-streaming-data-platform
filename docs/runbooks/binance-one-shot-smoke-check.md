@@ -8,6 +8,8 @@ Confirm that the project can load the real producer config, build the Binance co
 
 This is a manual external integration check. It depends on network and Binance availability and is not run in CI.
 
+For the next validation level after this receive-only check, use the [Binance-to-Kafka end-to-end smoke check](binance-kafka-e2e-smoke-check.md).
+
 ## Prerequisites
 
 - The project environment is active.
@@ -92,5 +94,5 @@ No local service cleanup is required. The WebSocket connection context closes af
 - If configuration loading fails, check `config/market_symbols.yaml`.
 - If connection or receive fails, check network access, DNS/TLS behavior, and Binance availability.
 - If parsing fails, inspect whether Binance changed the combined-stream envelope or trade payload shape.
-- The continuous WebSocket producer loop is not implemented yet.
-- Live Binance-to-Kafka publication is not implemented yet.
+- The executable Binance-to-Kafka path is covered separately by the end-to-end smoke runbook.
+- Graceful shutdown, retry/reconnect, delivery acknowledgement handling, and throughput optimization are not implemented yet.

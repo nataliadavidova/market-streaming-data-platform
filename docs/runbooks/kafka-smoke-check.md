@@ -8,6 +8,8 @@ Confirm that local Kafka can start, the `market.trades.raw` topic can be created
 
 This is a manual local integration check. It is not run in CI. It does not exercise the live Binance WebSocket path and does not prove continuous Binance-to-Kafka streaming.
 
+For the next validation level after this synthetic check, use the [Binance-to-Kafka end-to-end smoke check](binance-kafka-e2e-smoke-check.md).
+
 ## Prerequisites
 
 - Docker is running.
