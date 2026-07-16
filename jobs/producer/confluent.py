@@ -21,3 +21,7 @@ class ConfluentKafkaProducerClient:
 
     def flush(self) -> object:
         return self._producer.flush()
+
+
+def build_kafka_client(bootstrap_servers: str) -> ConfluentKafkaProducerClient:
+    return ConfluentKafkaProducerClient({"bootstrap.servers": bootstrap_servers})

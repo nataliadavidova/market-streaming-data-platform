@@ -54,3 +54,45 @@ def test_smoke_publish_one_does_not_use_binance_streaming_logic() -> None:
     assert "jobs.producer.binance" not in source
     assert "parse_binance" not in source
     assert "websocket" not in source.lower()
+
+
+def test_build_local_kafka_client_uses_local_default(monkeypatch) -> None:
+    built_with_bootstrap_servers = None
+    client = object()
+
+    def fake_build_kafka_client(bootstrap_servers: str) -> object:
+        nonlocal built_with_bootstrap_servers
+        built_with_bootstrap_servers = bootstrap_servers
+        return client
+
+    monkeypatch.setattr(
+        smoke_publish_one,
+        "build_kafka_client",
+        fake_build_kafka_client,
+    )
+
+    returned_client = smoke_publish_one.build_local_kafka_client()
+
+    assert returned_client is client
+    assert built_with_bootstrap_servers == "localhost:9092"
+
+
+def test_build_local_kafka_client_forwards_custom_bootstrap_servers(monkeypatch) -> None:
+    built_with_bootstrap_servers = None
+    client = object()
+
+    def fake_build_kafka_client(bootstrap_servers: str) -> object:
+        nonlocal built_with_bootstrap_servers
+        built_with_bootstrap_servers = bootstrap_servers
+        return client
+
+    monkeypatch.setattr(
+        smoke_publish_one,
+        "build_kafka_client",
+        fake_build_kafka_client,
+    )
+
+    returned_client = smoke_publish_one.build_local_kafka_client("custom:9092")
+
+    assert returned_client is client
+    assert built_with_bootstrap_servers == "custom:9092"

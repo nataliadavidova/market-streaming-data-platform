@@ -3,7 +3,7 @@
 from typing import Any
 
 from jobs.producer import confluent
-from jobs.producer.confluent import ConfluentKafkaProducerClient
+from jobs.producer.confluent import ConfluentKafkaProducerClient, build_kafka_client
 
 
 class FakeConfluentProducer:
@@ -23,6 +23,26 @@ class FakeConfluentProducer:
                 "value": value,
             }
         )
+        return object()
+
+    def flush(self) -> object:
+        self.flush_count += 1
+        return object()
+
+
+class FakeConfluentKafkaProducerClient:
+    created_with_config: dict[str, Any] | None = None
+    creation_count = 0
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.config = config
+        self.send_count = 0
+        self.flush_count = 0
+        FakeConfluentKafkaProducerClient.created_with_config = config
+        FakeConfluentKafkaProducerClient.creation_count += 1
+
+    def send(self, topic: str, key: bytes, value: bytes) -> object:
+        self.send_count += 1
         return object()
 
     def flush(self) -> object:
@@ -69,3 +89,22 @@ def test_confluent_kafka_producer_client_delegates_flush(monkeypatch) -> None:
     client.flush()
 
     assert client._producer.flush_count == 1
+
+
+def test_build_kafka_client_creates_client_with_bootstrap_servers(monkeypatch) -> None:
+    FakeConfluentKafkaProducerClient.creation_count = 0
+    monkeypatch.setattr(
+        confluent,
+        "ConfluentKafkaProducerClient",
+        FakeConfluentKafkaProducerClient,
+    )
+
+    client = build_kafka_client("broker.example:19092")
+
+    assert isinstance(client, FakeConfluentKafkaProducerClient)
+    assert FakeConfluentKafkaProducerClient.created_with_config == {
+        "bootstrap.servers": "broker.example:19092"
+    }
+    assert FakeConfluentKafkaProducerClient.creation_count == 1
+    assert client.send_count == 0
+    assert client.flush_count == 0

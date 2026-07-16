@@ -1,6 +1,6 @@
 """Publish one synthetic trade event to local Kafka for smoke testing."""
 
-from jobs.producer.confluent import ConfluentKafkaProducerClient
+from jobs.producer.confluent import ConfluentKafkaProducerClient, build_kafka_client
 from jobs.producer.events import TradeEvent
 from jobs.producer.kafka import prepare_trade_event_kafka_message
 from jobs.producer.publisher import KafkaProducerClient, KafkaPublisher
@@ -39,7 +39,7 @@ def publish_one_synthetic_trade_event(
 def build_local_kafka_client(
     bootstrap_servers: str = DEFAULT_BOOTSTRAP_SERVERS,
 ) -> ConfluentKafkaProducerClient:
-    return ConfluentKafkaProducerClient({"bootstrap.servers": bootstrap_servers})
+    return build_kafka_client(bootstrap_servers)
 
 
 def main() -> None:
