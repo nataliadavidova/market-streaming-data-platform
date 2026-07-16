@@ -1,10 +1,13 @@
 """Receive raw messages from WebSocket connections."""
 
+import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from time import time_ns
+from time import monotonic, time_ns
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class WebSocketConnection(Protocol):
@@ -73,7 +76,14 @@ class WebSocketMessageReceiverContext:
         exc: BaseException | None,
         traceback,
     ) -> bool | None:
-        return await self._connection_context.__aexit__(exc_type, exc, traceback)
+        started_at = monotonic()
+        try:
+            return await self._connection_context.__aexit__(exc_type, exc, traceback)
+        finally:
+            logger.info(
+                "WebSocket context exit duration %.3f seconds",
+                monotonic() - started_at,
+            )
 
 
 def open_websocket_message_receiver(

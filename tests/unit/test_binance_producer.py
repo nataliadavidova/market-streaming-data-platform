@@ -1,6 +1,7 @@
 """Test executable Binance producer assembly without external services."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,17 +15,21 @@ class FakeKafkaClient:
         self,
         events: list[str] | None = None,
         remaining_messages: int = 0,
+        flush_error: Exception | None = None,
     ) -> None:
         self.flush_count = 0
         self.events = events
         self.flush_timeouts: list[float | None] = []
         self.remaining_messages = remaining_messages
+        self.flush_error = flush_error
 
     def flush(self, timeout: float | None = None) -> int:
         self.flush_count += 1
         self.flush_timeouts.append(timeout)
         if self.events is not None:
             self.events.append("client flush")
+        if self.flush_error is not None:
+            raise self.flush_error
         return self.remaining_messages
 
 
@@ -241,6 +246,71 @@ def test_run_configured_binance_producer_raises_when_final_flush_leaves_messages
     assert client.flush_timeouts == [
         binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
     ]
+
+
+def test_run_configured_binance_producer_logs_final_flush_duration_when_flush_raises(
+    monkeypatch,
+    caplog,
+) -> None:
+    class FlushFailure(Exception):
+        pass
+
+    config = valid_producer_config()
+    events: list[str] = []
+    error = FlushFailure("flush failed")
+    client = FakeKafkaClient(events, flush_error=error)
+    publisher = object()
+    times = iter([30.0, 30.75])
+
+    async def fake_run_binance_trade_publisher(
+        received_config: ProducerConfig,
+        received_publisher: object,
+    ) -> None:
+        events.append("runner start")
+        assert received_config is config
+        assert received_publisher is publisher
+        events.append("runner finish")
+
+    monkeypatch.setattr(
+        binance_producer,
+        "load_producer_config",
+        lambda config_path: config,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "build_kafka_client",
+        lambda bootstrap_servers: client,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "KafkaPublisher",
+        lambda *, topic, client: publisher,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "run_binance_trade_publisher",
+        fake_run_binance_trade_publisher,
+    )
+    monkeypatch.setattr(binance_producer, "monotonic", lambda: next(times))
+
+    with caplog.at_level(logging.INFO, logger=binance_producer.logger.name):
+        with pytest.raises(FlushFailure) as exc_info:
+            asyncio.run(
+                binance_producer.run_configured_binance_producer(
+                    "custom/config.yaml",
+                    "broker.example:19092",
+                )
+            )
+
+    assert exc_info.value is error
+    assert events == ["runner start", "runner finish", "client flush"]
+    assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
+    assert "Final Kafka flush duration" in caplog.text
+    assert "0.750" in caplog.text
+    assert "5.000" in caplog.text
 
 
 def test_run_configured_binance_producer_finalization_error_preserves_runtime_context(

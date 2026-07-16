@@ -1,12 +1,16 @@
 """Executable assembly for the Binance-to-Kafka producer."""
 
 import asyncio
+import logging
 import os
+from time import monotonic
 
 from jobs.producer.binance_publisher import run_binance_trade_publisher
 from jobs.producer.config import load_producer_config
 from jobs.producer.confluent import build_kafka_client
 from jobs.producer.publisher import KafkaPublisher
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_CONFIG_PATH = "config/market_symbols.yaml"
@@ -34,7 +38,15 @@ async def run_configured_binance_producer(
 
         await run_binance_trade_publisher(config, publisher)
     finally:
-        remaining_messages = client.flush(FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS)
+        flush_started_at = monotonic()
+        try:
+            remaining_messages = client.flush(FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS)
+        finally:
+            logger.info(
+                "Final Kafka flush duration %.3f seconds with timeout %.3f seconds",
+                monotonic() - flush_started_at,
+                FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS,
+            )
         if remaining_messages:
             raise KafkaFinalizationError(
                 "Kafka finalization timed out with "

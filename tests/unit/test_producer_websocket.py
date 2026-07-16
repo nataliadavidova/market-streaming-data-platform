@@ -1,9 +1,11 @@
 """Test receiving one raw WebSocket message without network access."""
 
 import asyncio
+import logging
 
 import pytest
 
+from jobs.producer import websocket as websocket_module
 from jobs.producer.websocket import (
     ReceivedWebSocketMessage,
     open_websocket_message_receiver,
@@ -36,9 +38,13 @@ class FakeWebSocketContext:
         self,
         websocket: FakeWebSocket,
         events: list[str] | None = None,
+        exit_return: bool | None = None,
+        exit_error: Exception | None = None,
     ) -> None:
         self.websocket = websocket
         self.events = events
+        self.exit_return = exit_return
+        self.exit_error = exit_error
         self.enter_count = 0
         self.exit_count = 0
         self.exit_exception: tuple[type[BaseException] | None, BaseException | None] | None = None
@@ -54,11 +60,14 @@ class FakeWebSocketContext:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         traceback,
-    ) -> None:
+    ) -> bool | None:
         self.exit_count += 1
         self.exit_exception = (exc_type, exc)
         if self.events is not None:
             self.events.append("exit")
+        if self.exit_error is not None:
+            raise self.exit_error
+        return self.exit_return
 
 
 class FakeWebSocketConnect:
@@ -227,6 +236,67 @@ def test_receive_one_websocket_message_exits_connection_context() -> None:
     assert context.enter_count == 1
     assert context.exit_count == 1
     assert context.exit_exception == (None, None)
+
+
+def test_websocket_receiver_context_returns_delegated_exit_value(
+    monkeypatch,
+    caplog,
+) -> None:
+    times = iter([10.0, 10.125])
+    websocket = FakeWebSocket('{"event":"trade"}')
+    context = FakeWebSocketContext(websocket, exit_return=True)
+    connect = FakeWebSocketConnect(context)
+    receiver_context = open_websocket_message_receiver(
+        "wss://stream.example.test/stream",
+        connect=connect,
+    )
+
+    monkeypatch.setattr(websocket_module, "monotonic", lambda: next(times))
+
+    async def run() -> bool | None:
+        await receiver_context.__aenter__()
+        return await receiver_context.__aexit__(None, None, None)
+
+    with caplog.at_level(logging.INFO, logger=websocket_module.logger.name):
+        result = asyncio.run(run())
+
+    assert result is True
+    assert context.exit_count == 1
+    assert "WebSocket context exit duration" in caplog.text
+    assert "0.125" in caplog.text
+
+
+def test_websocket_receiver_context_logs_exit_duration_when_delegated_exit_raises(
+    monkeypatch,
+    caplog,
+) -> None:
+    class ExitFailure(Exception):
+        pass
+
+    times = iter([20.0, 20.25])
+    error = ExitFailure("close failed")
+    websocket = FakeWebSocket('{"event":"trade"}')
+    context = FakeWebSocketContext(websocket, exit_error=error)
+    connect = FakeWebSocketConnect(context)
+    receiver_context = open_websocket_message_receiver(
+        "wss://stream.example.test/stream",
+        connect=connect,
+    )
+
+    monkeypatch.setattr(websocket_module, "monotonic", lambda: next(times))
+
+    async def run() -> None:
+        await receiver_context.__aenter__()
+        await receiver_context.__aexit__(None, None, None)
+
+    with caplog.at_level(logging.INFO, logger=websocket_module.logger.name):
+        with pytest.raises(ExitFailure) as exc_info:
+            asyncio.run(run())
+
+    assert exc_info.value is error
+    assert context.exit_count == 1
+    assert "WebSocket context exit duration" in caplog.text
+    assert "0.250" in caplog.text
 
 
 def test_receive_one_websocket_message_captures_timestamp_after_recv_before_exit() -> None:
