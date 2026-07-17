@@ -9,13 +9,24 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
+
 
 class WebSocketConnection(Protocol):
     async def recv(self, decode: bool | None = None) -> str:
         ...
 
 
-WebSocketConnect = Callable[[str], AbstractAsyncContextManager[WebSocketConnection]]
+class WebSocketConnect(Protocol):
+    def __call__(
+        self,
+        url: str,
+        *,
+        close_timeout: float | None,
+    ) -> AbstractAsyncContextManager[WebSocketConnection]:
+        ...
+
+
 Clock = Callable[[], int]
 
 
@@ -59,10 +70,14 @@ class WebSocketMessageReceiverContext:
         *,
         connect: WebSocketConnect | None = None,
         clock: Clock = current_time_ms,
+        close_timeout: float | None = DEFAULT_WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
     ) -> None:
         websocket_connect = connect or _default_websocket_connect()
 
-        self._connection_context = websocket_connect(url)
+        self._connection_context = websocket_connect(
+            url,
+            close_timeout=close_timeout,
+        )
         self._clock = clock
 
     async def __aenter__(self) -> WebSocketMessageReceiver:
@@ -91,8 +106,14 @@ def open_websocket_message_receiver(
     *,
     connect: WebSocketConnect | None = None,
     clock: Clock = current_time_ms,
+    close_timeout: float | None = DEFAULT_WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
 ) -> WebSocketMessageReceiverContext:
-    return WebSocketMessageReceiverContext(url, connect=connect, clock=clock)
+    return WebSocketMessageReceiverContext(
+        url,
+        connect=connect,
+        clock=clock,
+        close_timeout=close_timeout,
+    )
 
 
 async def receive_one_websocket_message(
@@ -100,10 +121,12 @@ async def receive_one_websocket_message(
     *,
     connect: WebSocketConnect | None = None,
     clock: Clock = current_time_ms,
+    close_timeout: float | None = DEFAULT_WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
 ) -> ReceivedWebSocketMessage:
     async with open_websocket_message_receiver(
         url,
         connect=connect,
         clock=clock,
+        close_timeout=close_timeout,
     ) as receiver:
         return await receiver.receive()

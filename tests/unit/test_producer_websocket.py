@@ -7,6 +7,7 @@ import pytest
 
 from jobs.producer import websocket as websocket_module
 from jobs.producer.websocket import (
+    DEFAULT_WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
     ReceivedWebSocketMessage,
     open_websocket_message_receiver,
     receive_one_websocket_message,
@@ -74,9 +75,16 @@ class FakeWebSocketConnect:
     def __init__(self, context: FakeWebSocketContext) -> None:
         self.context = context
         self.urls: list[str] = []
+        self.close_timeouts: list[float | None] = []
 
-    def __call__(self, url: str) -> FakeWebSocketContext:
+    def __call__(
+        self,
+        url: str,
+        *,
+        close_timeout: float | None,
+    ) -> FakeWebSocketContext:
         self.urls.append(url)
+        self.close_timeouts.append(close_timeout)
         return self.context
 
 
@@ -96,6 +104,27 @@ def test_open_websocket_message_receiver_passes_url_to_connection_factory() -> N
     asyncio.run(run())
 
     assert connect.urls == ["wss://stream.example.test/stream"]
+    assert connect.close_timeouts == [DEFAULT_WEBSOCKET_CLOSE_TIMEOUT_SECONDS]
+
+
+def test_open_websocket_message_receiver_forwards_explicit_close_timeout() -> None:
+    websocket = FakeWebSocket('{"event":"trade"}')
+    context = FakeWebSocketContext(websocket)
+    connect = FakeWebSocketConnect(context)
+
+    async def run() -> None:
+        async with open_websocket_message_receiver(
+            "wss://stream.example.test/stream",
+            connect=connect,
+            clock=lambda: 1735689600456,
+            close_timeout=1.5,
+        ):
+            pass
+
+    asyncio.run(run())
+
+    assert connect.urls == ["wss://stream.example.test/stream"]
+    assert connect.close_timeouts == [1.5]
 
 
 def test_open_websocket_message_receiver_receives_multiple_messages_on_one_connection() -> None:

@@ -64,7 +64,12 @@ class FakeWebSocketConnect:
         self.context = context
         self.urls: list[str] = []
 
-    def __call__(self, url: str) -> FakeWebSocketContext:
+    def __call__(
+        self,
+        url: str,
+        *,
+        close_timeout: float | None,
+    ) -> FakeWebSocketContext:
         self.urls.append(url)
         return self.context
 
