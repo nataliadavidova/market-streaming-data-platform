@@ -2,8 +2,10 @@ KAFKA_BOOTSTRAP_SERVER := localhost:9092
 KAFKA_TOPIC := market.trades.raw
 KAFKA_TOPIC_PARTITIONS := 1
 KAFKA_TOPIC_REPLICATION_FACTOR := 1
+ICEBERG_REST_CONFIG_URL := http://localhost:8181/v1/config
+ICEBERG_READY_MAX_ATTEMPTS := 60
 
-.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -45,3 +47,23 @@ kafka-consume-one:
 		--from-beginning \
 		--max-messages 1 \
 		--timeout-ms 10000
+
+iceberg-up:
+	docker compose up -d minio minio-init iceberg-rest
+	attempt=1; \
+	while ! curl -fsS $(ICEBERG_REST_CONFIG_URL) >/dev/null; do \
+		if [ "$$attempt" -ge "$(ICEBERG_READY_MAX_ATTEMPTS)" ]; then \
+			docker compose ps minio minio-init iceberg-rest; \
+			docker compose logs --tail=80 minio minio-init iceberg-rest; \
+			exit 1; \
+		fi; \
+		attempt=$$((attempt + 1)); \
+		sleep 1; \
+	done
+
+iceberg-down:
+	docker compose stop iceberg-rest minio-init minio
+	docker compose rm -f iceberg-rest minio-init minio
+
+iceberg-ps:
+	docker compose ps minio minio-init iceberg-rest
