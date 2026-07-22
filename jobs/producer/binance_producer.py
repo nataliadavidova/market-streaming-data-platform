@@ -1,8 +1,11 @@
 """Executable assembly for the Binance-to-Kafka producer."""
 
 import asyncio
+import argparse
 import logging
 import os
+import sys
+from collections.abc import Mapping, Sequence
 from time import monotonic
 
 from jobs.producer.binance_publisher import run_binance_trade_publisher
@@ -26,8 +29,17 @@ class KafkaFinalizationError(RuntimeError):
 async def run_configured_binance_producer(
     config_path: str,
     bootstrap_servers: str,
+    topic_override: str | None = None,
 ) -> None:
     config = load_producer_config(config_path)
+    if topic_override:
+        config = config.model_copy(
+            update={
+                "kafka": config.kafka.model_copy(
+                    update={"raw_topic": topic_override}
+                )
+            }
+        )
     client = build_kafka_client(bootstrap_servers)
 
     try:
@@ -54,16 +66,37 @@ async def run_configured_binance_producer(
             )
 
 
-def main() -> None:
+def parse_args(
+    argv: Sequence[str] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> argparse.Namespace:
+    environment = os.environ if environ is None else environ
+    environment_topic = environment.get("KAFKA_TOPIC_TRADES_RAW")
+    if environment_topic is not None:
+        environment_topic = environment_topic.strip() or None
+
+    parser = argparse.ArgumentParser(description="Run the Binance Kafka producer")
+    parser.add_argument("--topic", default=environment_topic)
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args([] if argv is None else argv)
     bootstrap_servers = os.environ.get(
         KAFKA_BOOTSTRAP_SERVERS_ENV,
         DEFAULT_KAFKA_BOOTSTRAP_SERVERS,
     )
     try:
+        run_kwargs = {
+            "config_path": DEFAULT_CONFIG_PATH,
+            "bootstrap_servers": bootstrap_servers,
+        }
+        if args.topic is not None:
+            run_kwargs["topic_override"] = args.topic
         asyncio.run(
             run_configured_binance_producer(
-                DEFAULT_CONFIG_PATH,
-                bootstrap_servers,
+                **run_kwargs,
             )
         )
     except KeyboardInterrupt:
@@ -71,4 +104,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

@@ -629,3 +629,62 @@ def test_main_preserves_empty_bootstrap_servers(monkeypatch) -> None:
     binance_producer.main()
 
     assert run_bootstrap_servers == ""
+
+
+@pytest.mark.parametrize("value", ["dedicated.topic", " dedicated.topic "])
+def test_parse_args_reads_topic_from_environment(value: str) -> None:
+    args = binance_producer.parse_args(
+        [], environ={"KAFKA_TOPIC_TRADES_RAW": value}
+    )
+
+    assert args.topic == value.strip()
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_parse_args_empty_environment_topic_is_none(value: str) -> None:
+    args = binance_producer.parse_args(
+        [], environ={"KAFKA_TOPIC_TRADES_RAW": value}
+    )
+
+    assert args.topic is None
+
+
+def test_parse_args_cli_topic_overrides_environment_without_mutating_mapping() -> None:
+    environ = {"KAFKA_TOPIC_TRADES_RAW": "environment.topic"}
+
+    args = binance_producer.parse_args(
+        ["--topic", "cli.topic"], environ=environ
+    )
+
+    assert args.topic == "cli.topic"
+    assert environ == {"KAFKA_TOPIC_TRADES_RAW": "environment.topic"}
+
+
+def test_run_configured_binance_producer_overrides_config_topic(monkeypatch) -> None:
+    config = valid_producer_config()
+    client = FakeKafkaClient()
+    publisher_arguments = None
+
+    async def fake_runner(received_config, received_publisher) -> None:
+        assert received_config.kafka.raw_topic == "dedicated.topic"
+
+    monkeypatch.setattr(binance_producer, "load_producer_config", lambda _: config)
+    monkeypatch.setattr(binance_producer, "build_kafka_client", lambda _: client)
+
+    def fake_publisher(*, topic, client):
+        nonlocal publisher_arguments
+        publisher_arguments = {"topic": topic, "client": client}
+        return object()
+
+    monkeypatch.setattr(binance_producer, "KafkaPublisher", fake_publisher)
+    monkeypatch.setattr(
+        binance_producer, "run_binance_trade_publisher", fake_runner
+    )
+
+    asyncio.run(
+        binance_producer.run_configured_binance_producer(
+            "config.yaml", "localhost:9092", "dedicated.topic"
+        )
+    )
+
+    assert publisher_arguments["topic"] == "dedicated.topic"
