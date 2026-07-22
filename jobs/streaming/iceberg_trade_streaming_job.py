@@ -1,5 +1,8 @@
 """Assemble the application flow from Kafka trades to an Iceberg table."""
 
+import argparse
+import os
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from pyspark.sql import SparkSession
@@ -24,6 +27,15 @@ class SparkSessionBuilderLike(Protocol):
 
     def getOrCreate(self) -> object:
         ...
+
+
+def _parse_boolean(value: str) -> bool:
+    normalized_value = value.strip().lower()
+    if normalized_value in {"true", "1", "yes", "on"}:
+        return True
+    if normalized_value in {"false", "0", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"invalid boolean value: {value!r}")
 
 
 def build_iceberg_trade_spark_session(
@@ -132,3 +144,132 @@ def run_iceberg_trade_stream(
                 query.stop()
         finally:
             spark.stop()
+
+
+def parse_args(
+    argv: Sequence[str] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> argparse.Namespace:
+    """Parse host-executable arguments with environment-backed defaults."""
+    environment = os.environ if environ is None else environ
+    processing_time_value = environment.get("ICEBERG_TRADE_PROCESSING_TIME")
+    processing_time = (
+        processing_time_value
+        if processing_time_value is not None and processing_time_value.strip()
+        else None
+    )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--bootstrap-servers",
+        default=environment.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+    )
+    parser.add_argument(
+        "--topic",
+        default=environment.get("KAFKA_TOPIC_TRADES_RAW", "market.trades.raw"),
+    )
+    parser.add_argument(
+        "--app-name",
+        default=environment.get(
+            "ICEBERG_TRADE_APP_NAME",
+            "market-iceberg-trade-streaming",
+        ),
+    )
+    parser.add_argument(
+        "--catalog-name",
+        default=environment.get("ICEBERG_CATALOG_NAME", "market_catalog"),
+    )
+    parser.add_argument(
+        "--catalog-uri",
+        default=environment.get(
+            "ICEBERG_REST_HOST_URI",
+            "http://localhost:8181",
+        ),
+    )
+    parser.add_argument(
+        "--warehouse",
+        default=environment.get(
+            "ICEBERG_WAREHOUSE",
+            "s3://market-lake/warehouse",
+        ),
+    )
+    parser.add_argument(
+        "--table-name",
+        default=environment.get(
+            "ICEBERG_BRONZE_TABLE",
+            "market_catalog.market.bronze_trades",
+        ),
+    )
+    parser.add_argument(
+        "--s3-endpoint",
+        default=environment.get("S3_HOST_ENDPOINT", "http://localhost:9000"),
+    )
+    parser.add_argument(
+        "--s3-region",
+        default=environment.get("S3_REGION", "us-east-1"),
+    )
+    parser.add_argument(
+        "--s3-access-key",
+        default=environment.get("S3_ACCESS_KEY", "minioadmin"),
+    )
+    parser.add_argument(
+        "--s3-secret-key",
+        default=environment.get("S3_SECRET_KEY", "minioadmin"),
+    )
+    parser.add_argument(
+        "--checkpoint-location",
+        default=environment.get(
+            "ICEBERG_TRADE_CHECKPOINT_LOCATION",
+            "s3a://market-lake/checkpoints/market/bronze-trades",
+        ),
+    )
+    parser.add_argument(
+        "--query-name",
+        default=environment.get(
+            "ICEBERG_TRADE_QUERY_NAME",
+            "market-iceberg-bronze-trades",
+        ),
+    )
+    parser.add_argument(
+        "--processing-time",
+        default=processing_time,
+    )
+    parser.add_argument(
+        "--s3-path-style-access",
+        action=argparse.BooleanOptionalAction,
+        default=_parse_boolean(environment.get("S3_PATH_STYLE_ACCESS", "true")),
+    )
+    parser.add_argument(
+        "--s3a-ssl-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=_parse_boolean(environment.get("S3A_SSL_ENABLED", "false")),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the configured Iceberg trade streaming application."""
+    args = parse_args(argv)
+    run_iceberg_trade_stream(
+        bootstrap_servers=args.bootstrap_servers,
+        topic=args.topic,
+        app_name=args.app_name,
+        catalog_name=args.catalog_name,
+        catalog_uri=args.catalog_uri,
+        warehouse=args.warehouse,
+        table_name=args.table_name,
+        s3_endpoint=args.s3_endpoint,
+        s3_region=args.s3_region,
+        s3_access_key=args.s3_access_key,
+        s3_secret_key=args.s3_secret_key,
+        checkpoint_location=args.checkpoint_location,
+        query_name=args.query_name,
+        processing_time=args.processing_time,
+        s3_path_style_access=args.s3_path_style_access,
+        s3a_ssl_enabled=args.s3a_ssl_enabled,
+    )
+
+
+if __name__ == "__main__":
+    main()

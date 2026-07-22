@@ -1,5 +1,7 @@
 """Unit tests for Kafka-to-Iceberg streaming job orchestration."""
 
+import argparse
+
 import pytest
 
 from jobs.streaming import iceberg_trade_streaming_job
@@ -442,3 +444,239 @@ def test_run_stream_stops_spark_when_query_stop_fails(monkeypatch) -> None:
     assert query.await_count == 1
     assert query.stop_count == 1
     assert spark.stop_count == 1
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", " yes ", "1", "on"])
+def test_parse_boolean_accepts_true_values(value: str) -> None:
+    assert iceberg_trade_streaming_job._parse_boolean(value) is True
+
+
+@pytest.mark.parametrize("value", ["false", "FALSE", " no ", "0", "off"])
+def test_parse_boolean_accepts_false_values(value: str) -> None:
+    assert iceberg_trade_streaming_job._parse_boolean(value) is False
+
+
+def test_parse_boolean_rejects_unknown_value() -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="unexpected"):
+        iceberg_trade_streaming_job._parse_boolean("unexpected")
+
+
+def test_parse_args_uses_local_fallbacks() -> None:
+    args = iceberg_trade_streaming_job.parse_args([], environ={})
+
+    assert vars(args) == {
+        "bootstrap_servers": "localhost:9092",
+        "topic": "market.trades.raw",
+        "app_name": "market-iceberg-trade-streaming",
+        "catalog_name": "market_catalog",
+        "catalog_uri": "http://localhost:8181",
+        "warehouse": "s3://market-lake/warehouse",
+        "table_name": "market_catalog.market.bronze_trades",
+        "s3_endpoint": "http://localhost:9000",
+        "s3_region": "us-east-1",
+        "s3_access_key": "minioadmin",
+        "s3_secret_key": "minioadmin",
+        "checkpoint_location": (
+            "s3a://market-lake/checkpoints/market/bronze-trades"
+        ),
+        "query_name": "market-iceberg-bronze-trades",
+        "processing_time": None,
+        "s3_path_style_access": True,
+        "s3a_ssl_enabled": False,
+    }
+
+
+def test_parse_args_uses_environment_defaults_without_mutating_mapping() -> None:
+    environ = {
+        "KAFKA_BOOTSTRAP_SERVERS": "env-kafka:19092",
+        "KAFKA_TOPIC_TRADES_RAW": "env.trades.raw",
+        "ICEBERG_TRADE_APP_NAME": "env-app",
+        "ICEBERG_CATALOG_NAME": "env_catalog",
+        "ICEBERG_REST_HOST_URI": "http://env-rest:8181",
+        "ICEBERG_WAREHOUSE": "s3://env-lake/warehouse",
+        "ICEBERG_BRONZE_TABLE": "env_catalog.market.bronze_trades",
+        "S3_HOST_ENDPOINT": "http://env-minio:9000",
+        "S3_REGION": "eu-west-1",
+        "S3_ACCESS_KEY": "env-access",
+        "S3_SECRET_KEY": "env-secret",
+        "ICEBERG_TRADE_CHECKPOINT_LOCATION": "s3a://env/checkpoint",
+        "ICEBERG_TRADE_QUERY_NAME": "env-query",
+        "ICEBERG_TRADE_PROCESSING_TIME": "5 seconds",
+        "S3_PATH_STYLE_ACCESS": "false",
+        "S3A_SSL_ENABLED": "true",
+    }
+    original_environ = environ.copy()
+
+    args = iceberg_trade_streaming_job.parse_args([], environ=environ)
+
+    assert vars(args) == {
+        "bootstrap_servers": "env-kafka:19092",
+        "topic": "env.trades.raw",
+        "app_name": "env-app",
+        "catalog_name": "env_catalog",
+        "catalog_uri": "http://env-rest:8181",
+        "warehouse": "s3://env-lake/warehouse",
+        "table_name": "env_catalog.market.bronze_trades",
+        "s3_endpoint": "http://env-minio:9000",
+        "s3_region": "eu-west-1",
+        "s3_access_key": "env-access",
+        "s3_secret_key": "env-secret",
+        "checkpoint_location": "s3a://env/checkpoint",
+        "query_name": "env-query",
+        "processing_time": "5 seconds",
+        "s3_path_style_access": False,
+        "s3a_ssl_enabled": True,
+    }
+    assert environ == original_environ
+
+
+def test_parse_args_cli_values_override_environment_defaults() -> None:
+    environ = {
+        "KAFKA_BOOTSTRAP_SERVERS": "env-kafka:19092",
+        "KAFKA_TOPIC_TRADES_RAW": "env.topic",
+        "ICEBERG_TRADE_APP_NAME": "env-app",
+        "ICEBERG_CATALOG_NAME": "env_catalog",
+        "ICEBERG_REST_HOST_URI": "http://env-rest:8181",
+        "ICEBERG_WAREHOUSE": "s3://env/warehouse",
+        "ICEBERG_BRONZE_TABLE": "env_catalog.market.trades",
+        "S3_HOST_ENDPOINT": "http://env-s3:9000",
+        "S3_REGION": "env-region",
+        "S3_ACCESS_KEY": "env-access",
+        "S3_SECRET_KEY": "env-secret",
+        "ICEBERG_TRADE_CHECKPOINT_LOCATION": "s3a://env/checkpoint",
+        "ICEBERG_TRADE_QUERY_NAME": "env-query",
+        "ICEBERG_TRADE_PROCESSING_TIME": "10 seconds",
+        "S3_PATH_STYLE_ACCESS": "true",
+        "S3A_SSL_ENABLED": "false",
+    }
+    argv = [
+        "--bootstrap-servers",
+        "cli-kafka:29092",
+        "--topic",
+        "cli.topic",
+        "--app-name",
+        "cli-app",
+        "--catalog-name",
+        "cli_catalog",
+        "--catalog-uri",
+        "http://cli-rest:8181",
+        "--warehouse",
+        "s3://cli/warehouse",
+        "--table-name",
+        "cli_catalog.market.trades",
+        "--s3-endpoint",
+        "http://cli-s3:9000",
+        "--s3-region",
+        "cli-region",
+        "--s3-access-key",
+        "cli-access",
+        "--s3-secret-key",
+        "cli-secret",
+        "--checkpoint-location",
+        "s3a://cli/checkpoint",
+        "--query-name",
+        "cli-query",
+        "--processing-time",
+        "2 seconds",
+        "--no-s3-path-style-access",
+        "--s3a-ssl-enabled",
+    ]
+
+    args = iceberg_trade_streaming_job.parse_args(argv, environ=environ)
+
+    assert vars(args) == {
+        "bootstrap_servers": "cli-kafka:29092",
+        "topic": "cli.topic",
+        "app_name": "cli-app",
+        "catalog_name": "cli_catalog",
+        "catalog_uri": "http://cli-rest:8181",
+        "warehouse": "s3://cli/warehouse",
+        "table_name": "cli_catalog.market.trades",
+        "s3_endpoint": "http://cli-s3:9000",
+        "s3_region": "cli-region",
+        "s3_access_key": "cli-access",
+        "s3_secret_key": "cli-secret",
+        "checkpoint_location": "s3a://cli/checkpoint",
+        "query_name": "cli-query",
+        "processing_time": "2 seconds",
+        "s3_path_style_access": False,
+        "s3a_ssl_enabled": True,
+    }
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_parse_args_treats_empty_environment_processing_time_as_none(
+    value: str,
+) -> None:
+    args = iceberg_trade_streaming_job.parse_args(
+        [],
+        environ={"ICEBERG_TRADE_PROCESSING_TIME": value},
+    )
+
+    assert args.processing_time is None
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "value"),
+    [
+        ("S3_PATH_STYLE_ACCESS", "maybe"),
+        ("S3A_SSL_ENABLED", "perhaps"),
+    ],
+)
+def test_parse_args_rejects_invalid_boolean_environment_defaults(
+    environment_name: str,
+    value: str,
+) -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match=value):
+        iceberg_trade_streaming_job.parse_args(
+            [],
+            environ={environment_name: value},
+        )
+
+
+def test_main_forwards_parsed_arguments_without_changes(monkeypatch) -> None:
+    argv = ["--sentinel"]
+    namespace = argparse.Namespace(
+        bootstrap_servers="main-kafka",
+        topic="main-topic",
+        app_name="main-app",
+        catalog_name="main-catalog",
+        catalog_uri="main-uri",
+        warehouse="main-warehouse",
+        table_name="main-table",
+        s3_endpoint="main-endpoint",
+        s3_region="main-region",
+        s3_access_key="main-access",
+        s3_secret_key="main-secret",
+        checkpoint_location="main-checkpoint",
+        query_name="main-query",
+        processing_time="main-processing-time",
+        s3_path_style_access=False,
+        s3a_ssl_enabled=True,
+    )
+    parse_calls: list[object] = []
+    run_calls: list[dict[str, object]] = []
+
+    def fake_parse_args(received_argv):
+        parse_calls.append(received_argv)
+        return namespace
+
+    def fake_run(**kwargs):
+        run_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        iceberg_trade_streaming_job,
+        "parse_args",
+        fake_parse_args,
+    )
+    monkeypatch.setattr(
+        iceberg_trade_streaming_job,
+        "run_iceberg_trade_stream",
+        fake_run,
+    )
+
+    result = iceberg_trade_streaming_job.main(argv)
+
+    assert result is None
+    assert parse_calls == [argv]
+    assert run_calls == [vars(namespace)]
