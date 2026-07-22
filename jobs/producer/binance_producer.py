@@ -4,9 +4,12 @@ import asyncio
 import argparse
 import logging
 import os
+import signal
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from time import monotonic
+from typing import Iterator
 
 from jobs.producer.binance_publisher import run_binance_trade_publisher
 from jobs.producer.config import load_producer_config
@@ -26,6 +29,61 @@ class KafkaFinalizationError(RuntimeError):
     """Raised when Kafka messages remain queued after finalization."""
 
 
+@contextmanager
+def _installed_sigterm_handler(
+    loop: asyncio.AbstractEventLoop,
+    task: asyncio.Task,
+    state: dict[str, bool | int],
+    *,
+    signal_module=signal,
+) -> Iterator[None]:
+    previous_handler = signal_module.getsignal(signal_module.SIGTERM)
+    installed = False
+
+    def request_shutdown() -> None:
+        state["requested"] = True
+        state["signum"] = signal_module.SIGTERM
+        task.cancel()
+
+    try:
+        loop.add_signal_handler(signal_module.SIGTERM, request_shutdown)
+        installed = True
+        yield
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal_module.SIGTERM)
+        signal_module.signal(signal_module.SIGTERM, previous_handler)
+
+
+def _flush_kafka(client: object) -> None:
+    logger.info(
+        "FINAL_KAFKA_FLUSH_STARTED timeout=%.1f",
+        FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS,
+    )
+    flush_started_at = monotonic()
+    try:
+        remaining_messages = client.flush(FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS)
+    except BaseException:
+        logger.exception("FINAL_KAFKA_FLUSH_FAILED")
+        raise
+    finally:
+        logger.info(
+            "Final Kafka flush duration %.3f seconds with timeout %.3f seconds",
+            monotonic() - flush_started_at,
+            FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS,
+        )
+
+    logger.info("FINAL_KAFKA_FLUSH_RESULT remaining=%d", remaining_messages)
+    if remaining_messages:
+        logger.error("FINAL_KAFKA_FLUSH_FAILED")
+        raise KafkaFinalizationError(
+            "Kafka finalization timed out with "
+            f"{remaining_messages} message(s) still queued"
+        )
+
+    logger.info("FINAL_KAFKA_FLUSH_SUCCEEDED")
+
+
 async def run_configured_binance_producer(
     config_path: str,
     bootstrap_servers: str,
@@ -42,28 +100,36 @@ async def run_configured_binance_producer(
         )
     client = build_kafka_client(bootstrap_servers)
 
+    state: dict[str, bool | int] = {"requested": False}
     try:
-        publisher = KafkaPublisher(
-            topic=config.kafka.raw_topic,
-            client=client,
-        )
-
-        await run_binance_trade_publisher(config, publisher)
-    finally:
-        flush_started_at = monotonic()
         try:
-            remaining_messages = client.flush(FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS)
-        finally:
-            logger.info(
-                "Final Kafka flush duration %.3f seconds with timeout %.3f seconds",
-                monotonic() - flush_started_at,
-                FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS,
-            )
-        if remaining_messages:
-            raise KafkaFinalizationError(
-                "Kafka finalization timed out with "
-                f"{remaining_messages} message(s) still queued"
-            )
+            publisher = KafkaPublisher(topic=config.kafka.raw_topic, client=client)
+            loop = asyncio.get_running_loop()
+            task = asyncio.current_task()
+            if task is None:  # pragma: no cover - always present under asyncio.run
+                raise RuntimeError(
+                    "producer runtime requires a running asyncio task"
+                )
+
+            with _installed_sigterm_handler(loop, task, state):
+                try:
+                    await run_binance_trade_publisher(config, publisher)
+                except asyncio.CancelledError:
+                    if not state["requested"]:
+                        raise
+                    logger.info("PRODUCER_SHUTDOWN_REQUESTED signal=SIGTERM")
+        except BaseException as runtime_error:
+            try:
+                _flush_kafka(client)
+            except BaseException as flush_error:
+                runtime_error.add_note(f"final Kafka flush failed: {flush_error}")
+            raise
+        else:
+            _flush_kafka(client)
+            signal_name = "SIGTERM" if state["requested"] else "NORMAL"
+            logger.info("PRODUCER_SHUTDOWN_COMPLETED signal=%s", signal_name)
+    except asyncio.CancelledError:
+        raise
 
 
 def parse_args(
@@ -100,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
         )
     except KeyboardInterrupt:
+        logger.info("PRODUCER_SHUTDOWN_COMPLETED signal=SIGINT")
         return
 
 

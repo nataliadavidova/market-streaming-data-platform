@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -356,7 +357,7 @@ def test_run_configured_binance_producer_finalization_error_preserves_runtime_co
         fake_run_binance_trade_publisher,
     )
 
-    with pytest.raises(binance_producer.KafkaFinalizationError) as exc_info:
+    with pytest.raises(RuntimeFailure) as exc_info:
         asyncio.run(
             binance_producer.run_configured_binance_producer(
                 "custom/config.yaml",
@@ -364,8 +365,8 @@ def test_run_configured_binance_producer_finalization_error_preserves_runtime_co
             )
         )
 
-    assert "3 message(s) still queued" in str(exc_info.value)
-    assert exc_info.value.__context__ is error
+    assert exc_info.value is error
+    assert "3 message(s) still queued" in "\n".join(exc_info.value.__notes__)
     assert events == ["runner start", "runner raise", "client flush"]
     assert client.flush_count == 1
     assert client.flush_timeouts == [
@@ -688,3 +689,137 @@ def test_run_configured_binance_producer_overrides_config_topic(monkeypatch) -> 
     )
 
     assert publisher_arguments["topic"] == "dedicated.topic"
+
+
+class FakeSignalLoop:
+    def __init__(self) -> None:
+        self.added = {}
+        self.removed = []
+
+    def add_signal_handler(self, signum, callback) -> None:
+        self.added[signum] = callback
+
+    def remove_signal_handler(self, signum) -> bool:
+        self.removed.append(signum)
+        return True
+
+
+class FakeSignalTask:
+    def __init__(self) -> None:
+        self.cancel_count = 0
+
+    def cancel(self) -> bool:
+        self.cancel_count += 1
+        return True
+
+
+def test_sigterm_handler_cancels_task_and_restores_previous_handler() -> None:
+    loop = FakeSignalLoop()
+    task = FakeSignalTask()
+    state = {"requested": False}
+
+    class Signals:
+        SIGTERM = 15
+
+        def __init__(self) -> None:
+            self.restored = []
+
+        def getsignal(self, signum):
+            return "previous"
+
+        def signal(self, signum, handler) -> None:
+            self.restored.append((signum, handler))
+
+    signals = Signals()
+    with binance_producer._installed_sigterm_handler(
+        loop, task, state, signal_module=signals
+    ):
+        loop.added[signals.SIGTERM]()
+
+    assert state == {"requested": True, "signum": signals.SIGTERM}
+    assert task.cancel_count == 1
+    assert loop.removed == [signals.SIGTERM]
+    assert signals.restored == [(signals.SIGTERM, "previous")]
+
+
+def test_sigterm_handler_restores_previous_handler_after_install_failure() -> None:
+    class FailingLoop(FakeSignalLoop):
+        def add_signal_handler(self, signum, callback) -> None:
+            raise RuntimeError("handler install failed")
+
+    class Signals:
+        SIGTERM = 15
+
+        def __init__(self) -> None:
+            self.restored = []
+
+        def getsignal(self, signum):
+            return "previous"
+
+        def signal(self, signum, handler) -> None:
+            self.restored.append((signum, handler))
+
+    signals = Signals()
+    with pytest.raises(RuntimeError, match="handler install failed"):
+        with binance_producer._installed_sigterm_handler(
+            FailingLoop(), FakeSignalTask(), {"requested": False},
+            signal_module=signals,
+        ):
+            pass
+
+    assert signals.restored == [(signals.SIGTERM, "previous")]
+
+
+def test_flush_markers_report_success(caplog) -> None:
+    client = FakeKafkaClient(remaining_messages=0)
+
+    with caplog.at_level(logging.INFO, logger=binance_producer.logger.name):
+        binance_producer._flush_kafka(client)
+
+    assert "FINAL_KAFKA_FLUSH_STARTED timeout=5.0" in caplog.text
+    assert "FINAL_KAFKA_FLUSH_RESULT remaining=0" in caplog.text
+    assert "FINAL_KAFKA_FLUSH_SUCCEEDED" in caplog.text
+
+
+def test_flush_markers_report_remaining_messages_and_raise(caplog) -> None:
+    client = FakeKafkaClient(remaining_messages=2)
+
+    with caplog.at_level(logging.INFO, logger=binance_producer.logger.name):
+        with pytest.raises(binance_producer.KafkaFinalizationError):
+            binance_producer._flush_kafka(client)
+
+    assert "FINAL_KAFKA_FLUSH_RESULT remaining=2" in caplog.text
+    assert "FINAL_KAFKA_FLUSH_FAILED" in caplog.text
+    assert "FINAL_KAFKA_FLUSH_SUCCEEDED" not in caplog.text
+
+
+def test_handled_sigterm_cancellation_returns_normally(monkeypatch, caplog) -> None:
+    config = valid_producer_config()
+    client = FakeKafkaClient()
+
+    @contextmanager
+    def fake_handlers(loop, task, state):
+        state["requested"] = True
+        yield
+
+    async def cancelled_runtime(received_config, received_publisher):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(binance_producer, "load_producer_config", lambda _: config)
+    monkeypatch.setattr(binance_producer, "build_kafka_client", lambda _: client)
+    monkeypatch.setattr(binance_producer, "KafkaPublisher", lambda **_: object())
+    monkeypatch.setattr(
+        binance_producer, "run_binance_trade_publisher", cancelled_runtime
+    )
+    monkeypatch.setattr(binance_producer, "_installed_sigterm_handler", fake_handlers)
+
+    with caplog.at_level(logging.INFO, logger=binance_producer.logger.name):
+        asyncio.run(
+            binance_producer.run_configured_binance_producer(
+                "config.yaml", "localhost:9092"
+            )
+        )
+
+    assert "PRODUCER_SHUTDOWN_REQUESTED signal=SIGTERM" in caplog.text
+    assert "PRODUCER_SHUTDOWN_COMPLETED signal=SIGTERM" in caplog.text
+    assert client.flush_count == 1
