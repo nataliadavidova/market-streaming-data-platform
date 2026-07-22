@@ -6,23 +6,34 @@ This project is a portfolio Data Engineering project for a real-time market data
 
 Build a production-style streaming data platform that ingests market trade data, publishes raw events to Kafka, processes them with streaming jobs, stores durable analytical data, and exposes query-ready outputs with basic data-quality checks.
 
-The project is currently in the bootstrap phase. The implemented foundation focuses on producer contracts, Binance receive/parse behavior, local Kafka development workflow, an executable Binance-to-Kafka producer path, and unit-testable boundaries.
+The project remains in the Version 1 bootstrap phase, but the first live ingestion slice is implemented and smoke-tested end to end.
 
-## Target Data Flow
+## Current and Target Data Flow
 
-Planned Version 1 flow:
+Current verified ingestion flow:
 
-`Market API/WebSocket -> Kafka -> Spark Structured Streaming -> Iceberg on S3-compatible storage -> ClickHouse -> dashboard + basic DQ checks`
+`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> typed Bronze parser -> Iceberg Bronze table -> Parquet/metadata in MinIO`
 
-This is the target architecture, not the current implementation state.
+Spark processing progress is persisted separately:
+
+`Spark checkpoint -> Hadoop S3A -> MinIO`
+
+The broader target remains:
+
+`... -> Iceberg -> ClickHouse -> dashboard + basic DQ checks`
+
+ClickHouse and dashboard serving are not part of the current implementation.
 
 ## Component Responsibilities
 
 - Market API/WebSocket: source of live market trade messages.
 - Python producer: reads market trade messages, validates/parses them into internal contracts, and publishes raw events to Kafka.
 - Kafka: durable streaming buffer for raw market events.
-- Spark Structured Streaming: reads Kafka, parses, validates, normalizes, and aggregates streaming data.
-- Iceberg on S3-compatible storage: durable analytical table storage for normalized data.
+- Spark Structured Streaming: reads Kafka, parses, validates, and normalizes the typed Bronze contract.
+- Iceberg on S3-compatible storage: durable Bronze table storage with snapshots, manifests, and metadata.
+- REST catalog + S3FileIO: resolves Iceberg metadata and reads/writes table objects in S3-compatible storage.
+- Hadoop S3A: stores Spark checkpoint objects independently from Iceberg table metadata.
+- MinIO: local S3-compatible storage for Iceberg data, metadata, and Spark checkpoints.
 - ClickHouse: low-latency analytical serving layer for aggregates and dashboard queries.
 - Dashboard or SQL layer: user-facing analysis surface.
 - Data-quality checks: basic validation for freshness, schema expectations, and event quality.
@@ -50,8 +61,11 @@ Implemented:
 - `run_binance_trade_publish_loop(receiver, publisher)` provides permanent sequential repetition over already-created dependencies.
 - `run_binance_trade_publisher(config, publisher)` owns the Binance receiver-session lifecycle around the publish loop.
 - `python -m jobs.producer.binance_producer` loads config, reads `KAFKA_BOOTSTRAP_SERVERS`, creates the Kafka client and `KafkaPublisher`, starts the Binance publisher runtime, finalizes the Kafka client in application assembly, and treats top-level `KeyboardInterrupt` as expected operator shutdown.
+- The producer accepts `--topic` with precedence `--topic -> KAFKA_TOPIC_TRADES_RAW -> config.kafka.raw_topic`; the override is applied through an immutable config copy.
 - Local Kafka runs through Docker Compose.
 - Makefile commands support local Kafka up/down, topic creation, one synthetic producer smoke publish, and bounded consume-one checks.
+- `make iceberg-trade-stream` runs the Spark Kafka source, typed Bronze parser, native Iceberg streaming sink, and query-specific S3A checkpoint.
+- A dedicated Kafka topic, Iceberg table, and checkpoint are required for runtime smoke tests; production Bronze is not a smoke target.
 - GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
 
 Implemented executable producer flow:
@@ -60,8 +74,8 @@ Implemented executable producer flow:
 
 Current lifecycle ownership:
 
-- `main()`: environment lookup, host default for Kafka bootstrap, default config path, `asyncio.run(...)`, and catching only top-level `KeyboardInterrupt`.
-- `run_configured_binance_producer(...)`: config loading, concrete Kafka client construction, `KafkaPublisher` construction, invoking the Binance runtime, and finalizing the concrete Kafka client in a `finally` block.
+- `main()`: environment/CLI lookup, host default for Kafka bootstrap, default config path, runtime logging setup under the executable guard, `asyncio.run(...)`, and handling expected top-level `KeyboardInterrupt`.
+- `run_configured_binance_producer(...)`: config loading, immutable topic override, concrete Kafka client construction, `KafkaPublisher` construction, SIGTERM lifecycle, invoking the Binance runtime, and finalizing the concrete Kafka client.
 - `run_binance_trade_publisher(...)`: Binance receiver-session lifecycle.
 - Publish loop: permanent sequential repetition.
 - Per-event operation: one receive and one publish.
@@ -89,6 +103,8 @@ Current operational semantics:
 - Only the application-level final flush currently uses the 5.0-second timeout.
 - Exceptions propagate naturally.
 - On `SIGINT`, Python `asyncio.run(...)` cancels the main task, cancellation unwinds the Binance/WebSocket contexts, application assembly performs a final Kafka flush, `asyncio.run(...)` surfaces `KeyboardInterrupt`, and `main()` treats that top-level interruption as expected operator shutdown.
+- On `SIGTERM`, an asyncio loop callback records the request and cancels the main task without calling WebSocket or Kafka code directly. The WebSocket context exits before the bounded final Kafka flush; successful handled SIGTERM returns normally.
+- Runtime INFO markers expose producer shutdown request, final flush start/result/success/failure, and completed shutdown.
 - Total process shutdown is not guaranteed within five seconds because Binance/WebSocket cleanup occurs before final Kafka finalization.
 - The implemented shutdown path is not a complete production shutdown framework.
 
@@ -99,7 +115,8 @@ Manual checks completed:
 - Synthetic one-event producer smoke-check has published to local Kafka.
 - Bounded local console consume-check has read the synthetic event from Kafka.
 - Manual live one-shot Binance smoke-check has connected to Binance, received one real combined-stream trade message, parsed it into `TradeEvent`, and closed normally.
-- Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published one fresh real Binance `TradeEvent` to `market.trades.raw`, consumed it with a fresh latest-offset consumer group, and verified clean `SIGINT` process exit with no cancellation or `KeyboardInterrupt` traceback.
+- Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published fresh real Binance `TradeEvent` records, consumed them with a fresh latest-offset consumer group, and verified clean producer shutdown.
+- Dedicated Binance -> Kafka -> Spark -> Iceberg smoke-checks have verified Bronze writes, S3A checkpoint progress, checkpoint recovery, and clean application-level Spark SIGINT/SIGTERM shutdown.
 
 ## Planned Target Architecture
 
@@ -109,15 +126,12 @@ Planned but not implemented:
 - WebSocket close-timeout tuning or instrumentation.
 - Shutdown-stage timing.
 - Per-message flush timeout, per-message flush removal, and throughput optimization.
-- SIGTERM handling and second-interrupt escalation behavior.
+- Second-interrupt escalation behavior and bounded escalation policy.
 - Delivery acknowledgement handling.
 - Producer container execution.
 - Delivery or undelivered-message logging and metrics.
-- Spark Structured Streaming ingestion from Kafka.
-- Streaming normalization and data-quality checks.
-- Iceberg table writes on S3-compatible storage.
 - ClickHouse aggregate loading.
 - Dashboard or analytical SQL layer.
 - Production-like observability, consumer lag monitoring, and reliability features.
 
-Do not treat planned Spark Streaming, Iceberg, ClickHouse, Debezium, observability, or reliability features as implemented.
+Do not treat planned ClickHouse, dashboard, Debezium, observability, or reliability features as implemented. The current Spark/Kafka parser, Iceberg sink, S3A checkpoint, and tested graceful shutdown slices are implemented, but they do not provide universal exactly-once or crash-safety guarantees.

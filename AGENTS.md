@@ -73,7 +73,7 @@ Add Terraform, cloud resources, deployment strategy, and optional Kubernetes.
 
 ## Current project state
 
-The project is currently in the bootstrap phase.
+The latest completed milestone is live Binance → Kafka → Spark → Iceberg ingestion with S3A checkpoint evidence.
 
 Current Python package:
 
@@ -83,54 +83,37 @@ Current config file:
 
 `config/market_symbols.yaml`
 
+Current architecture boundaries:
+
+- Kafka separates the Binance producer from Spark processing.
+- Iceberg table metadata is managed through the REST catalog and S3FileIO.
+- Spark progress is stored through Hadoop S3A checkpoints.
+- MinIO stores Iceberg data, metadata, and checkpoint objects for local smoke runs.
+- Production Bronze must not be used for destructive smoke tests; use a dedicated topic, table, and checkpoint.
+
 Current local service config:
 
-- `docker-compose.yml`: defines one local Kafka service for development/testing. It uses `apache/kafka:4.0.0`, runs single-node Kafka in KRaft mode, exposes the host listener at `localhost:9092`, and exposes the internal Docker-network listener at `kafka:29092`. It does not use ZooKeeper and does not include a topic creation service yet.
-- `docker compose config` has passed for the local Kafka service configuration.
-- `docker compose up -d kafka` smoke-check has passed. Kafka started successfully, reached a running/ready/started state in logs, and `docker compose down` shut it down cleanly.
-- Manual local Kafka topic setup/check has passed for `market.trades.raw`. The topic was created successfully and described with `PartitionCount: 1` and `ReplicationFactor: 1`.
-- Makefile commands have been added and runtime-checked successfully for `kafka-up`, `kafka-down`, `kafka-create-topic`, and `kafka-describe-topic`.
-- Makefile command `kafka-consume-one` has been added. It wraps the bounded console consumer check for `market.trades.raw`.
-- Makefile command `kafka-smoke-publish-one` has been added. It wraps `python -m jobs.producer.smoke_publish_one`.
-- The full local Kafka Makefile workflow runtime-check has passed: `make kafka-up`, `make kafka-create-topic`, `python -m jobs.producer.smoke_publish_one`, `make kafka-consume-one`, and `make kafka-down`. `make kafka-consume-one` read the expected smoke-test message with `trade_id` `smoke-test-1` and exited cleanly with exit code 0.
-- The cleaner all-Makefile Kafka workflow runtime-check has passed: `make kafka-up`, `make kafka-create-topic`, `make kafka-smoke-publish-one`, `make kafka-consume-one`, and `make kafka-down`. `make kafka-smoke-publish-one` succeeded. `make kafka-consume-one` read the expected smoke-test message with `trade_id` `smoke-test-1` and exited cleanly with exit code 0.
-- The first one-event producer runtime smoke-test against local Kafka has passed. `python -m jobs.producer.smoke_publish_one` succeeded and published one synthetic trade event to `market.trades.raw`.
-- The manual bounded Kafka consume/check has passed. `kafka-console-consumer.sh` successfully read the smoke-test message from `market.trades.raw` with `trade_id` `smoke-test-1`, confirming the first small Kafka round-trip: Python producer → Kafka topic → console consumer.
-- The Kafka producer synthetic smoke-check is documented in `docs/runbooks/kafka-smoke-check.md`.
-- GitHub Actions CI is configured in `.github/workflows/ci.yml` and runs `make test` on pull requests and pushes to `main`.
-- Kafka smoke-checks remain manual and are not part of CI yet.
-- No topic-init service has been added yet.
-- Binance combined trade-stream URL building is implemented, including URL construction from `ProducerConfig`.
-- A single-message WebSocket receiver is implemented using `websockets>=15,<16`. It returns `ReceivedWebSocketMessage` with received text and a receive-boundary Unix epoch millisecond timestamp captured immediately after `recv(decode=True)`.
-- Binance combined-stream message parsing is implemented. It extracts the `data` payload and delegates to the existing Binance trade parser.
-- One-shot Binance receive-and-parse composition is implemented. `receive_one_binance_trade_event(config)` builds the URL, receives one WebSocket message, parses it, and returns a `TradeEvent`.
-- The manual live one-shot Binance smoke-check has passed using the corrected timestamp API with `BTCUSDT`, `ETHUSDT`, and `SOLUSDT` configured. It verified the path from `config/market_symbols.yaml` through a real Binance WebSocket connection to one parsed `TradeEvent`, with normal one-shot connection close.
-- The Binance one-shot smoke-check is documented in `docs/runbooks/binance-one-shot-smoke-check.md`.
-- Reusable WebSocket and Binance trade receiver sessions are implemented. One Binance WebSocket connection can receive multiple parsed `TradeEvent` objects without reconnecting for each event.
-- Per-event Binance-to-Kafka publication is implemented through `receive_and_publish_one_binance_trade(receiver, publisher)`.
-- The permanent sequential publish loop is implemented through `run_binance_trade_publish_loop(receiver, publisher)`.
-- The Binance publisher runtime is implemented through `run_binance_trade_publisher(config, publisher)`, which owns the Binance receiver-session lifecycle around the permanent loop.
-- A reusable Kafka client factory, `build_kafka_client(bootstrap_servers)`, is implemented.
-- The executable Binance-to-Kafka producer entrypoint is implemented: `python -m jobs.producer.binance_producer`.
-- The manual bounded Binance-to-Kafka E2E smoke-check has passed. A fresh real Binance `TradeEvent` was published to `market.trades.raw` and consumed with a unique latest-offset consumer group. Consumer freshness requires a unique group, `auto.offset.reset=latest`, and starting the consumer before the producer.
-- The Binance-to-Kafka E2E smoke-check is documented in `docs/runbooks/binance-kafka-e2e-smoke-check.md`.
-- Latest implementation milestone: `a99fd3e Bound Kafka producer final flush`.
-- Application-level final Kafka flush is implemented in `run_configured_binance_producer(...)`.
-- `KafkaProducerClient.flush(timeout=None)` accepts an optional timeout and returns the number of messages still queued.
-- Final application-level Kafka flush is bounded to 5.0 seconds and raises `KafkaFinalizationError` if messages remain queued.
-- The live graceful-finalization E2E smoke-check has passed. A fresh real `ETHUSDT` event was consumed from `market.trades.raw`; the producer received `SIGINT`, exited with status `0`, wrote empty stdout/stderr, and showed no `CancelledError` or `KeyboardInterrupt` traceback.
-- The observed shutdown duration in that run was approximately 9.892 seconds. That is an operational observation, not a guarantee or diagnosed cause.
-- Documentation is split into `README.md`, `docs/architecture.md`, `docs/roadmap.md`, and smoke-check runbooks under `docs/runbooks/`.
-- Retry and reconnect behavior has not been implemented yet.
-- Per-message Kafka flush still uses default library behavior with no explicit timeout, and its return value remains ignored.
-- WebSocket `close_timeout` remains unchanged. The approximately 9.892-second shutdown observation is still not explained by the Kafka finalization change; the strongest current hypothesis remains the default WebSocket close timeout, but that has not been directly proven.
-- SIGTERM handling and second-interrupt escalation behavior have not been implemented yet.
-- Delivery callback acknowledgement handling has not been implemented yet.
-- Throughput optimization and per-message flush removal have not been implemented yet.
-- Logging and metrics have not been implemented yet.
-- Containerized producer execution has not been implemented yet.
-- The executable producer remains a permanent process and still requires operator termination. Current top-level `SIGINT` handling exits cleanly, while broader shutdown behavior remains intentionally limited.
-- No Python consumer/read check has been added yet.
+- `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
+- `docker compose config` has passed for the local services.
+- Makefile targets cover explicit Kafka/Iceberg lifecycle, topic checks, and `iceberg-trade-stream`.
+- GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
+
+Latest repository state:
+
+- Latest commit: `f0004fc Enable Binance producer runtime logging`.
+- Focused producer tests: 25 passed.
+- Full suite: 185 passed.
+- The current documentation slice is not yet committed.
+
+Verified runtime evidence:
+
+- A real Binance WebSocket trade reached Kafka through the production receiver/parser and was written to a dedicated Iceberg table with an advancing S3A checkpoint.
+- A controlled long-running producer run produced 641 records at Kafka offsets `0..640`; Spark wrote 641 rows with no missing or duplicate offsets in that run.
+- Spark restart with the same checkpoint resumed saved Kafka progress; the tested previously committed record was not replayed and a new record was written once.
+- Spark application-level SIGINT and SIGTERM, and producer SIGINT and SIGTERM, completed cleanly in the tested scenarios.
+- Producer SIGTERM observability showed three dedicated-topic records, return code `0`, final flush `remaining=0`, required INFO markers in order, observed shutdown duration `3.615s` with WebSocket context exit about `2.002s`, no forced cleanup, and no orphan process.
+
+These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, reconnect, arbitrary-crash, Kubernetes, or throughput guarantees.
 
 Current producer modules:
 
@@ -149,31 +132,54 @@ Current implemented functions and models:
 
 - `load_config(config_path)`: reads YAML config using PyYAML and returns a Python dictionary.
 - `load_producer_config(config_path)`: reads and validates producer config using Pydantic models.
-- `TradeEvent`: internal producer trade event contract. It validates `exchange`, `symbol`, `trade_id`, `price`, `quantity`, `event_time_ms`, and `ingested_at_ms`. `price` and `quantity` use `Decimal`.
-- `TradeEvent.to_json_message()`: serializes a trade event to deterministic JSON for future Kafka publishing. `Decimal` values are preserved as JSON strings.
-- `parse_binance_trade_message(raw_message, ingested_at_ms)`: parses a Binance trade message into `TradeEvent`. It maps `s` to `symbol`, `t` to `trade_id`, `p` to `price`, `q` to `quantity`, and `T` to `event_time_ms`.
-- `build_binance_combined_trade_stream_url(symbols)`: builds the Binance combined `@trade` stream URL for configured symbols, preserving order and lowercasing stream names.
-- `build_binance_combined_trade_stream_url_from_config(config)`: builds the Binance combined trade-stream URL from `ProducerConfig`.
-- `ReceivedWebSocketMessage`: immutable one-message WebSocket result with `text` and `received_at_ms`.
-- `receive_one_websocket_message(url, connect=None, clock=current_time_ms)`: opens one WebSocket connection, receives exactly one text message with `recv(decode=True)`, captures Unix epoch milliseconds immediately after receive, and returns `ReceivedWebSocketMessage`.
-- `parse_binance_combined_trade_message(raw_message, ingested_at_ms)`: parses one Binance combined-stream JSON text message, extracts the `data` object, and delegates to `parse_binance_trade_message`.
-- `receive_one_binance_trade_event(config, connect=None, clock=current_time_ms)`: one-shot Binance composition that builds the stream URL from `ProducerConfig`, receives one message, parses it, and returns a `TradeEvent`.
-- `KafkaMessage`: typed key/value message contract for future Kafka publishing.
-- `prepare_trade_event_kafka_message(event)`: prepares deterministic Kafka key/value payloads from a `TradeEvent` without connecting to Kafka. Kafka key example: `binance:BTCUSDT`. The value is `TradeEvent.to_json_message()`.
-- `KafkaProducerClient`: protocol for injectable Kafka-like clients used by the publisher wrapper.
-- `KafkaPublisher`: wrapper that publishes prepared `KafkaMessage` objects to a configured topic by UTF-8 encoding the key and value. It uses an injectable client, so unit tests do not require a real Kafka broker.
-- `ConfluentKafkaProducerClient`: adapter that adapts `confluent_kafka.Producer` to the existing `KafkaProducerClient` protocol. `send(topic, key, value)` delegates to `Producer.produce(topic=topic, key=key, value=value)`, and `flush()` delegates to `Producer.flush()`.
-- `build_kafka_client(bootstrap_servers)`: creates a `ConfluentKafkaProducerClient` with explicit bootstrap servers.
-- `build_synthetic_trade_event()`: builds one deterministic synthetic `TradeEvent` for local producer smoke testing.
-- `publish_one_synthetic_trade_event(client, topic)`: publishes one synthetic trade event through an injectable Kafka producer client. The default topic is `market.trades.raw`.
-- `build_local_kafka_client(bootstrap_servers)`: creates a `ConfluentKafkaProducerClient` for the local Kafka bootstrap server. The default bootstrap server is `localhost:9092`.
-- `open_websocket_message_receiver(url, connect=None, clock=current_time_ms)`: opens one reusable WebSocket receiver session.
-- `open_binance_trade_event_receiver(config, connect=None, clock=current_time_ms)`: opens one reusable Binance trade-event receiver session.
-- `receive_and_publish_one_binance_trade(receiver, publisher)`: receives exactly one Binance `TradeEvent`, prepares one Kafka message, publishes it once, and returns the event.
-- `run_binance_trade_publish_loop(receiver, publisher)`: permanently repeats the one-event publish operation over already-created dependencies.
-- `run_binance_trade_publisher(config, publisher)`: owns the Binance receiver-session context and runs the permanent publish loop.
-- `run_configured_binance_producer(config_path, bootstrap_servers)`: loads producer config, builds the Kafka client, creates `KafkaPublisher` using `config.kafka.raw_topic`, and invokes the Binance publisher runtime.
-- `python -m jobs.producer.binance_producer`: executable producer command. It reads `KAFKA_BOOTSTRAP_SERVERS`, defaults to `localhost:9092` when absent, uses `config/market_symbols.yaml`, and runs the configured producer.
+- `TradeEvent`: internal producer trade event contract using `Decimal` for `price` and `quantity`.
+- `TradeEvent.to_json_message()`: serializes deterministic JSON while preserving decimal values as strings.
+- Binance URL and parser helpers build combined `@trade` streams and map Binance payloads into `TradeEvent`.
+- Reusable WebSocket/Binance receiver sessions capture receive-boundary timestamps and support repeated receives.
+- `prepare_trade_event_kafka_message(event)`: prepares the UTF-8-compatible key/value contract.
+- `KafkaPublisher` and `ConfluentKafkaProducerClient`: injectable publisher and concrete Kafka adapter boundaries.
+- `build_kafka_client(bootstrap_servers)`: creates the concrete Confluent Kafka client.
+- `receive_and_publish_one_binance_trade(receiver, publisher)`: receives one event, prepares one message, and publishes it.
+- `run_binance_trade_publish_loop(receiver, publisher)`: permanently repeats sequential receive/publish operations.
+- `run_binance_trade_publisher(config, publisher)`: owns the Binance receiver context around that loop.
+- `run_configured_binance_producer(config_path, bootstrap_servers, topic_override=None)`: loads config, applies an immutable topic override, builds the client/publisher, installs the SIGTERM lifecycle, runs the producer, and finalizes Kafka.
+- `python -m jobs.producer.binance_producer`: executable command with `--topic` → `KAFKA_TOPIC_TRADES_RAW` → YAML precedence, `KAFKA_BOOTSTRAP_SERVERS` with `localhost:9092` fallback, and standalone INFO logging.
+
+Producer shutdown contract:
+
+- SIGINT keeps the top-level `KeyboardInterrupt` path and returns normally after successful cleanup.
+- SIGTERM is handled by an asyncio loop callback that records the request and cancels the main task; the callback does not call WebSocket or Kafka code.
+- Cancellation unwinds the WebSocket context before the one bounded five-second final Kafka flush.
+- Finalization markers include `FINAL_KAFKA_FLUSH_STARTED`, `FINAL_KAFKA_FLUSH_RESULT`, `FINAL_KAFKA_FLUSH_SUCCEEDED`/`FAILED`, and `PRODUCER_SHUTDOWN_COMPLETED`.
+- Runtime and finalization exceptions propagate; cleanup errors must not replace an earlier runtime exception.
+
+Spark/Iceberg contract:
+
+- `jobs/streaming/iceberg_trade_streaming_job.py` reads Kafka, parses the typed Bronze contract, writes through the native Iceberg streaming sink, and uses a query-specific S3A checkpoint.
+- Iceberg uses the REST catalog plus S3FileIO; MinIO stores data and metadata objects locally.
+- Graceful Spark shutdown uses a shutdown event, timed `awaitTermination` polling, `query.stop()` before `spark.stop()`, and handler restoration after cleanup.
+
+Known limitations and backlog:
+
+- Reconnect settings exist in configuration, but a reconnect loop is not implemented.
+- Delivery callbacks and explicit delivery acknowledgement observability are not implemented.
+- Kafka idempotent producer mode is not enabled.
+- Per-message Kafka flush remains enabled; throughput benchmarking and optimization are pending.
+- There is no general end-to-end exactly-once or business-key deduplication guarantee.
+- SIGKILL and arbitrary crash-timing safety are not proven.
+- Kubernetes deployment/termination, ClickHouse serving, dashboard, and network-partition recovery remain future work.
+
+Other Markdown status:
+
+- `README.md` records the current verified milestone and operational boundaries.
+- `docs/architecture.md` and `docs/roadmap.md` retain the broader target architecture and sequencing.
+- Existing runbooks under `docs/runbooks/` include historical procedures and may contain pre-milestone wording; they were intentionally not changed in this documentation slice.
+
+Next stage:
+
+- This documentation milestone is the current slice.
+- After it, make a read-only decision between Binance reconnect, delivery observability/callbacks, and producer throughput/per-message flush.
+- Do not combine those three reliability areas in one slice.
 
 ## Python environment
 
@@ -229,11 +235,10 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-Next likely small step:
-
-- Inspect and design WebSocket `close_timeout` wiring and a focused live shutdown comparison. Keep it separate from retry/reconnect, delivery callbacks, logging, metrics, batching, and signal-management work.
+After this documentation slice, perform a read-only decision between Binance reconnect, delivery observability/callbacks, and producer throughput/per-message flush. Keep those three reliability areas separate; do not implement them together.
 
 Current test suite:
 
-- 92 unit tests cover raw config loading, valid producer config validation, invalid producer config validation, `TradeEvent` validation, `TradeEvent` JSON serialization, Binance URL construction, Binance trade parsing, Binance combined-message parsing, reusable WebSocket receiving with receive-boundary timestamps, one-shot and reusable Binance receive-and-parse composition, Binance-to-Kafka publish operations, the executable producer assembly and bounded finalization, Kafka message contract preparation, Kafka publisher wrapper behavior, the Confluent Kafka producer adapter and factory, and the one-event producer smoke publisher.
-- `make test` passes locally.
+- 25 focused producer tests pass.
+- 185 tests pass in the full suite.
+- Tests are not automatically rerun for documentation-only changes unless explicitly requested.

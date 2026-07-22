@@ -25,6 +25,7 @@ Completed:
 - Binance publisher runtime that owns the receiver session around the loop.
 - Reusable Kafka client factory.
 - Executable Binance producer entrypoint: `python -m jobs.producer.binance_producer`.
+- Binance producer `--topic` override with CLI → environment → YAML precedence.
 - Application-owned final Kafka flush in the executable producer assembly.
 - Timeout-aware `KafkaProducerClient.flush` contract.
 - Timeout forwarding in `ConfluentKafkaProducerClient`.
@@ -37,12 +38,19 @@ Completed:
 - Manual live one-shot Binance WebSocket smoke-check.
 - Successful bounded live Binance-to-Kafka smoke-check through the executable producer and Kafka consumer.
 - Successful bounded live graceful-finalization smoke-check confirming fresh Binance-to-Kafka delivery, producer exit status `0`, and no cancellation or `KeyboardInterrupt` traceback.
+- Spark Kafka source and typed Bronze parser.
+- Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
+- Query-specific Hadoop S3A checkpoint configuration.
+- Dedicated Kafka → Spark → Iceberg smoke with checkpoint progress and recovery verification.
+- Graceful Spark SIGINT and SIGTERM shutdown with query-before-Spark cleanup order.
+- Graceful producer SIGINT and SIGTERM shutdown with bounded final Kafka flush.
+- Runtime INFO logging for producer lifecycle and final-flush markers.
 - Focused unit coverage for bounded Kafka finalization.
 - Unit-test CI with GitHub Actions.
 
 In progress:
 
-- Producer hardening for long-running live Binance-to-Kafka execution.
+- Documentation consistency for the completed ingestion milestone.
 
 Planned:
 
@@ -51,16 +59,14 @@ Planned:
 - Shutdown-stage timing.
 - Per-message flush timeout or removal.
 - Delivery or undelivered-message logging and metrics.
-- SIGTERM handling and second-`SIGINT` escalation behavior.
+- Second-`SIGINT` escalation behavior and bounded escalation policy.
 - Retry and reconnect behavior.
 - Delivery acknowledgement handling.
 - Improve throughput.
-- Logging and metrics.
+- Extended logging and metrics beyond the verified lifecycle markers.
 - Producer container and deployment configuration.
 - Gap detection, backfill, and deduplication strategy.
-- Spark Structured Streaming read from Kafka.
-- Stream parsing, validation, normalization, and basic data-quality checks.
-- Iceberg writes on S3-compatible storage.
+- Additional stream validation, normalization, and data-quality checks.
 - ClickHouse aggregate writes.
 - Dashboard or analytical SQL layer.
 
@@ -113,7 +119,7 @@ Planned:
 - DLQ or quarantine topics.
 - Monitoring and alerting.
 - Consumer lag alerts.
-- Checkpointing and watermarking.
+- Additional checkpointing/watermarking reliability controls.
 - Idempotency strategy.
 - Security and secrets handling.
 - Expanded CI/CD.

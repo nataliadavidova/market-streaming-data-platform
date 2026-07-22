@@ -110,7 +110,7 @@ python -m jobs.producer.binance_producer
 
 The producer is a permanent process. It does not exit after one message. After the bounded consumer receives one fresh message, stop the producer externally.
 
-Send `SIGINT` to the producer after one fresh message is consumed, then wait a bounded period for natural process exit. Current `main()` handles only the expected top-level `KeyboardInterrupt`; async cancellation is still allowed to unwind lower layers. The application assembly owns final Kafka flush in a `finally` block.
+Send `SIGINT` or `SIGTERM` to the producer after one fresh message is consumed, then wait a bounded period for natural process exit. `SIGTERM` requests cancellation through the asyncio loop; the WebSocket context unwinds before the application-owned final Kafka flush. A successful handled signal returns exit status `0`.
 
 The final application-level Kafka flush is bounded with `FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS = 5.0`. If messages remain queued after that finalization timeout, the producer raises `KafkaFinalizationError` and exits as a failed process. This policy applies only to the final application flush. Per-message flushes still use the default library behavior with no explicit timeout.
 
@@ -121,6 +121,8 @@ Expected current `SIGINT` result:
 - Producer exit status `0`.
 - No uncaught `asyncio.exceptions.CancelledError` traceback.
 - No uncaught `KeyboardInterrupt` traceback.
+
+The same controlled-shutdown result was verified for application-level `SIGTERM`. Runtime INFO logging exposes the request and final-flush lifecycle markers when the executable is started directly.
 
 Before `ce1f8d0`, this bounded smoke-check ended with status `-2` and cancellation/`KeyboardInterrupt` output. That is historical behavior, not the current expectation.
 
@@ -210,8 +212,7 @@ git status --short
 
 ## Current Limitations
 
-- `SIGINT` is handled as expected top-level operator shutdown, but there is no explicit signal-registration framework.
-- SIGTERM handling is not implemented or tested.
+- `SIGINT` and application-level `SIGTERM` are handled as expected operator shutdown paths and have been live-tested.
 - Second-`SIGINT` or escalation behavior is not implemented or tested.
 - Final application-level Kafka flush has a 5.0-second timeout and raises `KafkaFinalizationError` if messages remain queued.
 - Per-message Kafka flush still has no explicit timeout, and its return value remains ignored.
