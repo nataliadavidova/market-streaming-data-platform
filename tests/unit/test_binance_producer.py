@@ -823,3 +823,41 @@ def test_handled_sigterm_cancellation_returns_normally(monkeypatch, caplog) -> N
     assert "PRODUCER_SHUTDOWN_REQUESTED signal=SIGTERM" in caplog.text
     assert "PRODUCER_SHUTDOWN_COMPLETED signal=SIGTERM" in caplog.text
     assert client.flush_count == 1
+
+
+def test_configure_runtime_logging_uses_info_and_stable_format(monkeypatch) -> None:
+    calls = []
+
+    monkeypatch.setattr(
+        binance_producer.logging,
+        "basicConfig",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    binance_producer._configure_runtime_logging()
+
+    assert calls == [
+        {
+            "level": logging.INFO,
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        }
+    ]
+
+
+def test_import_does_not_configure_runtime_logging(monkeypatch) -> None:
+    configured = False
+
+    def fail_if_configured(**kwargs):
+        nonlocal configured
+        configured = True
+
+    monkeypatch.setattr(
+        binance_producer.logging,
+        "basicConfig",
+        fail_if_configured,
+    )
+
+    # Importing an already loaded module must not invoke the executable guard.
+    __import__("jobs.producer.binance_producer")
+
+    assert configured is False

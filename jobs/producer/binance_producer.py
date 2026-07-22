@@ -25,6 +25,13 @@ DEFAULT_KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
+def _configure_runtime_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+
 class KafkaFinalizationError(RuntimeError):
     """Raised when Kafka messages remain queued after finalization."""
 
@@ -171,4 +178,5 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    _configure_runtime_logging()
     main(sys.argv[1:])
