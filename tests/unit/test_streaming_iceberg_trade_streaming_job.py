@@ -1,6 +1,8 @@
 """Unit tests for Kafka-to-Iceberg streaming job orchestration."""
 
 import argparse
+import threading
+from contextlib import contextmanager
 
 import pytest
 
@@ -37,9 +39,11 @@ class FakeSpark:
         events: list[str] | None = None,
         *,
         sql_error: Exception | None = None,
+        stop_error: Exception | None = None,
     ) -> None:
         self.events = events
         self.sql_error = sql_error
+        self.stop_error = stop_error
         self.sql_calls: list[str] = []
         self.stop_count = 0
 
@@ -55,6 +59,8 @@ class FakeSpark:
         if self.events is not None:
             self.events.append("spark.stop")
         self.stop_count += 1
+        if self.stop_error is not None:
+            raise self.stop_error
 
 
 class FakeQuery:
@@ -65,20 +71,34 @@ class FakeQuery:
         active: bool = True,
         await_error: Exception | None = None,
         stop_error: Exception | None = None,
+        await_results: list[bool] | None = None,
+        request_shutdown_on_await: bool = False,
     ) -> None:
         self.events = events
         self.isActive = active
         self.await_error = await_error
         self.stop_error = stop_error
+        self.await_results = list(await_results or [True])
+        self.request_shutdown_on_await = request_shutdown_on_await
+        self.shutdown_event: threading.Event | None = None
         self.await_count = 0
+        self.await_timeouts: list[float] = []
         self.stop_count = 0
 
-    def awaitTermination(self) -> None:
+    def awaitTermination(self, timeout: float) -> bool:
         if self.events is not None:
             self.events.append("awaitTermination")
         self.await_count += 1
+        self.await_timeouts.append(timeout)
         if self.await_error is not None:
             raise self.await_error
+        if self.request_shutdown_on_await:
+            assert self.shutdown_event is not None
+            self.shutdown_event.set()
+        result = self.await_results.pop(0)
+        if result:
+            self.isActive = False
+        return result
 
     def stop(self) -> None:
         if self.events is not None:
@@ -87,6 +107,34 @@ class FakeQuery:
         if self.stop_error is not None:
             raise self.stop_error
         self.isActive = False
+
+
+class FakeSignalModule:
+    SIGINT = 2
+    SIGTERM = 15
+
+    def __init__(self) -> None:
+        self.previous_handlers = {
+            self.SIGINT: object(),
+            self.SIGTERM: object(),
+        }
+        self.handlers = dict(self.previous_handlers)
+        self.calls: list[tuple[int, object]] = []
+        self.fail_on_registration: int | None = None
+
+    def getsignal(self, signum: int) -> object:
+        return self.handlers[signum]
+
+    def signal(self, signum: int, handler: object) -> object:
+        self.calls.append((signum, handler))
+        if (
+            self.fail_on_registration == signum
+            and handler not in self.previous_handlers.values()
+        ):
+            raise RuntimeError(f"failed to register {signum}")
+        previous = self.handlers[signum]
+        self.handlers[signum] = handler
+        return previous
 
 
 BUILD_ARGUMENTS = {
@@ -239,6 +287,7 @@ def install_orchestration_fakes(
     query: FakeQuery | None,
     events: list[str],
     sink_error: Exception | None = None,
+    record_handler_events: bool = False,
 ) -> tuple[object, object, dict[str, object]]:
     raw_stream = object()
     parsed_stream = object()
@@ -266,6 +315,18 @@ def install_orchestration_fakes(
             raise sink_error
         return query
 
+    @contextmanager
+    def fake_handlers(shutdown_event):
+        if record_handler_events:
+            events.append("install handlers")
+        if query is not None:
+            query.shutdown_event = shutdown_event
+        try:
+            yield
+        finally:
+            if record_handler_events:
+                events.append("restore handlers")
+
     monkeypatch.setattr(
         iceberg_trade_streaming_job,
         "build_iceberg_trade_spark_session",
@@ -286,6 +347,11 @@ def install_orchestration_fakes(
         "start_bronze_trade_stream",
         fake_sink,
     )
+    monkeypatch.setattr(
+        iceberg_trade_streaming_job,
+        "_installed_shutdown_handlers",
+        fake_handlers,
+    )
     return raw_stream, parsed_stream, calls
 
 
@@ -294,12 +360,18 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
 ) -> None:
     events: list[str] = []
     spark = FakeSpark(events)
-    query = FakeQuery(events, active=True)
+    query = FakeQuery(
+        events,
+        active=True,
+        await_results=[False],
+        request_shutdown_on_await=True,
+    )
     raw_stream, parsed_stream, calls = install_orchestration_fakes(
         monkeypatch,
         spark=spark,
         query=query,
         events=events,
+        record_handler_events=True,
     )
 
     result = iceberg_trade_streaming_job.run_iceberg_trade_stream(**RUN_ARGUMENTS)
@@ -311,9 +383,11 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
         "Kafka source",
         "parser",
         "Iceberg sink",
+        "install handlers",
         "awaitTermination",
         "query.stop",
         "spark.stop",
+        "restore handlers",
     ]
     assert calls["source"] == (
         spark,
@@ -333,6 +407,7 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
         },
     )
     assert query.await_count == 1
+    assert query.await_timeouts == [1.0]
     assert query.stop_count == 1
     assert spark.stop_count == 1
 
@@ -350,7 +425,7 @@ def test_run_stream_does_not_stop_inactive_query(monkeypatch) -> None:
 
     iceberg_trade_streaming_job.run_iceberg_trade_stream(**RUN_ARGUMENTS)
 
-    assert query.await_count == 1
+    assert query.await_count == 0
     assert query.stop_count == 0
     assert spark.stop_count == 1
 
@@ -429,7 +504,13 @@ def test_run_stream_stops_spark_when_query_stop_fails(monkeypatch) -> None:
     error = RuntimeError("stop failed")
     events: list[str] = []
     spark = FakeSpark(events)
-    query = FakeQuery(events, active=True, stop_error=error)
+    query = FakeQuery(
+        events,
+        active=True,
+        stop_error=error,
+        await_results=[False],
+        request_shutdown_on_await=True,
+    )
     install_orchestration_fakes(
         monkeypatch,
         spark=spark,
@@ -443,6 +524,282 @@ def test_run_stream_stops_spark_when_query_stop_fails(monkeypatch) -> None:
     assert exc_info.value is error
     assert query.await_count == 1
     assert query.stop_count == 1
+    assert spark.stop_count == 1
+
+
+@pytest.mark.parametrize(
+    "signum",
+    [FakeSignalModule.SIGINT, FakeSignalModule.SIGTERM],
+)
+def test_request_shutdown_only_sets_event(signum: int) -> None:
+    shutdown_event = threading.Event()
+
+    result = iceberg_trade_streaming_job._request_shutdown(
+        shutdown_event,
+        signum,
+        None,
+    )
+
+    assert result is None
+    assert shutdown_event.is_set()
+
+
+def test_installed_handlers_handle_signals_and_restore_previous_handlers() -> None:
+    shutdown_event = threading.Event()
+    fake_signal = FakeSignalModule()
+    previous_handlers = dict(fake_signal.previous_handlers)
+
+    with iceberg_trade_streaming_job._installed_shutdown_handlers(
+        shutdown_event,
+        signal_module=fake_signal,
+    ):
+        sigint_handler = fake_signal.handlers[fake_signal.SIGINT]
+        sigterm_handler = fake_signal.handlers[fake_signal.SIGTERM]
+        assert callable(sigint_handler)
+        assert sigint_handler is sigterm_handler
+        sigint_handler(fake_signal.SIGINT, object())
+        assert shutdown_event.is_set()
+        shutdown_event.clear()
+        sigterm_handler(fake_signal.SIGTERM, None)
+        assert shutdown_event.is_set()
+
+    assert fake_signal.handlers == previous_handlers
+    assert [signum for signum, _ in fake_signal.calls] == [
+        fake_signal.SIGINT,
+        fake_signal.SIGTERM,
+        fake_signal.SIGINT,
+        fake_signal.SIGTERM,
+    ]
+
+
+def test_installed_handlers_restore_previous_handlers_after_body_error() -> None:
+    error = RuntimeError("body failed")
+    fake_signal = FakeSignalModule()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        with iceberg_trade_streaming_job._installed_shutdown_handlers(
+            threading.Event(),
+            signal_module=fake_signal,
+        ):
+            raise error
+
+    assert exc_info.value is error
+    assert fake_signal.handlers == fake_signal.previous_handlers
+
+
+def test_installed_handlers_restore_sigint_after_sigterm_registration_error() -> None:
+    fake_signal = FakeSignalModule()
+    fake_signal.fail_on_registration = fake_signal.SIGTERM
+
+    with pytest.raises(RuntimeError, match="failed to register 15"):
+        with iceberg_trade_streaming_job._installed_shutdown_handlers(
+            threading.Event(),
+            signal_module=fake_signal,
+        ):
+            pytest.fail("handler context must not be entered")
+
+    assert fake_signal.handlers == fake_signal.previous_handlers
+
+
+def test_await_query_returns_after_timed_await_reports_termination() -> None:
+    query = FakeQuery(active=True, await_results=[True])
+
+    result = iceberg_trade_streaming_job._await_query_until_shutdown(
+        query,
+        shutdown_event=threading.Event(),
+        poll_interval_seconds=0.25,
+    )
+
+    assert result is None
+    assert query.await_timeouts == [0.25]
+
+
+def test_await_query_does_not_poll_when_shutdown_already_requested() -> None:
+    shutdown_event = threading.Event()
+    shutdown_event.set()
+    query = FakeQuery(active=True)
+
+    iceberg_trade_streaming_job._await_query_until_shutdown(
+        query,
+        shutdown_event=shutdown_event,
+    )
+
+    assert query.await_count == 0
+
+
+def test_await_query_stops_polling_when_event_is_set_between_iterations() -> None:
+    shutdown_event = threading.Event()
+    query = FakeQuery(
+        active=True,
+        await_results=[False],
+        request_shutdown_on_await=True,
+    )
+    query.shutdown_event = shutdown_event
+
+    iceberg_trade_streaming_job._await_query_until_shutdown(
+        query,
+        shutdown_event=shutdown_event,
+    )
+
+    assert query.await_count == 1
+    assert query.await_timeouts == [1.0]
+
+
+def test_await_query_does_not_poll_inactive_query() -> None:
+    query = FakeQuery(active=False)
+
+    iceberg_trade_streaming_job._await_query_until_shutdown(
+        query,
+        shutdown_event=threading.Event(),
+    )
+
+    assert query.await_count == 0
+
+
+def test_await_query_propagates_await_error() -> None:
+    error = RuntimeError("await failed")
+    query = FakeQuery(active=True, await_error=error)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        iceberg_trade_streaming_job._await_query_until_shutdown(
+            query,
+            shutdown_event=threading.Event(),
+        )
+
+    assert exc_info.value is error
+    assert query.await_timeouts == [1.0]
+
+
+def test_run_stream_does_not_stop_query_after_normal_query_termination(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    spark = FakeSpark(events)
+    query = FakeQuery(events, active=True, await_results=[True])
+    install_orchestration_fakes(
+        monkeypatch,
+        spark=spark,
+        query=query,
+        events=events,
+        record_handler_events=True,
+    )
+
+    result = iceberg_trade_streaming_job.run_iceberg_trade_stream(**RUN_ARGUMENTS)
+
+    assert result is None
+    assert query.stop_count == 0
+    assert spark.stop_count == 1
+    assert events[-4:] == [
+        "install handlers",
+        "awaitTermination",
+        "spark.stop",
+        "restore handlers",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query_stop_error", "spark_stop_error", "expected_note_fragments"),
+    [
+        (RuntimeError("query stop failed"), None, ["query stop failed"]),
+        (None, RuntimeError("spark stop failed"), ["spark stop failed"]),
+        (
+            RuntimeError("query stop failed"),
+            RuntimeError("spark stop failed"),
+            ["query stop failed", "spark stop failed"],
+        ),
+    ],
+)
+def test_run_stream_preserves_await_error_over_cleanup_errors(
+    monkeypatch,
+    query_stop_error,
+    spark_stop_error,
+    expected_note_fragments,
+) -> None:
+    await_error = RuntimeError("await failed")
+    events: list[str] = []
+    spark = FakeSpark(events, stop_error=spark_stop_error)
+    query = FakeQuery(
+        events,
+        active=True,
+        await_error=await_error,
+        stop_error=query_stop_error,
+    )
+    install_orchestration_fakes(
+        monkeypatch,
+        spark=spark,
+        query=query,
+        events=events,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        iceberg_trade_streaming_job.run_iceberg_trade_stream(**RUN_ARGUMENTS)
+
+    assert exc_info.value is await_error
+    notes = "\n".join(getattr(await_error, "__notes__", []))
+    for fragment in expected_note_fragments:
+        assert fragment in notes
+    assert query.stop_count == 1
+    assert spark.stop_count == 1
+
+
+def test_stop_query_and_spark_propagates_spark_error() -> None:
+    error = RuntimeError("spark stop failed")
+    query = FakeQuery(active=False)
+    spark = FakeSpark(stop_error=error)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        iceberg_trade_streaming_job._stop_query_and_spark(query, spark)
+
+    assert exc_info.value is error
+    assert query.stop_count == 0
+    assert spark.stop_count == 1
+
+
+def test_stop_query_and_spark_keeps_query_error_primary() -> None:
+    query_error = RuntimeError("query stop failed")
+    spark_error = RuntimeError("spark stop failed")
+    query = FakeQuery(active=True, stop_error=query_error)
+    spark = FakeSpark(stop_error=spark_error)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        iceberg_trade_streaming_job._stop_query_and_spark(query, spark)
+
+    assert exc_info.value is query_error
+    assert "spark stop failed" in "\n".join(query_error.__notes__)
+    assert query.stop_count == 1
+    assert spark.stop_count == 1
+
+
+@pytest.mark.parametrize("failure_stage", ["table", "sink"])
+def test_early_failure_preserves_primary_over_spark_stop_error(
+    monkeypatch,
+    failure_stage: str,
+) -> None:
+    primary_error = RuntimeError(f"{failure_stage} failed")
+    spark_error = RuntimeError("spark stop failed")
+    events: list[str] = []
+    spark = FakeSpark(
+        events,
+        sql_error=primary_error if failure_stage == "table" else None,
+        stop_error=spark_error,
+    )
+    query = FakeQuery(events)
+    install_orchestration_fakes(
+        monkeypatch,
+        spark=spark,
+        query=query,
+        events=events,
+        sink_error=primary_error if failure_stage == "sink" else None,
+        record_handler_events=True,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        iceberg_trade_streaming_job.run_iceberg_trade_stream(**RUN_ARGUMENTS)
+
+    assert exc_info.value is primary_error
+    assert "spark stop failed" in "\n".join(primary_error.__notes__)
+    assert "install handlers" not in events
+    assert query.stop_count == 0
     assert spark.stop_count == 1
 
 
