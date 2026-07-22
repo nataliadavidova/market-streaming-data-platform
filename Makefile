@@ -4,8 +4,9 @@ KAFKA_TOPIC_PARTITIONS := 1
 KAFKA_TOPIC_REPLICATION_FACTOR := 1
 ICEBERG_REST_CONFIG_URL := http://localhost:8181/v1/config
 ICEBERG_READY_MAX_ATTEMPTS := 60
+SPARK_ICEBERG_TRADE_PACKAGES := org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.2,org.apache.hadoop:hadoop-aws:3.4.2,org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.11.0,org.apache.iceberg:iceberg-aws-bundle:1.11.0
 
-.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps iceberg-trade-stream
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -67,3 +68,8 @@ iceberg-down:
 
 iceberg-ps:
 	docker compose ps minio minio-init iceberg-rest
+
+iceberg-trade-stream:
+	PYTHONPATH=. spark-submit \
+		--packages "$(SPARK_ICEBERG_TRADE_PACKAGES)" \
+		jobs/streaming/iceberg_trade_streaming_job.py
