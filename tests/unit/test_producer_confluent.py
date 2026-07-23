@@ -18,13 +18,23 @@ class FakeConfluentProducer:
         self.flush_remaining_messages = 0
         self.flush_error: Exception | None = None
 
-    def produce(self, *, topic: str, key: bytes, value: bytes) -> object:
+    def produce(
+        self,
+        *,
+        topic: str,
+        key: bytes,
+        value: bytes,
+        on_delivery=None,
+    ) -> object:
+        produced_message = {
+            "topic": topic,
+            "key": key,
+            "value": value,
+        }
+        if on_delivery is not None:
+            produced_message["on_delivery"] = on_delivery
         self.produced_messages.append(
-            {
-                "topic": topic,
-                "key": key,
-                "value": value,
-            }
+            produced_message
         )
         return object()
 
@@ -86,6 +96,23 @@ def test_confluent_kafka_producer_client_delegates_send_to_produce(
             "value": b'{"price":"1"}',
         }
     ]
+
+
+def test_confluent_kafka_producer_client_forwards_delivery_callback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(confluent, "Producer", FakeConfluentProducer)
+    client = ConfluentKafkaProducerClient({"bootstrap.servers": "localhost:9092"})
+    callback = object()
+
+    client.send(
+        topic="market.trades.raw",
+        key=b"binance:BTCUSDT",
+        value=b'{"price":"1"}',
+        on_delivery=callback,
+    )
+
+    assert client._producer.produced_messages[0]["on_delivery"] is callback
 
 
 def test_confluent_kafka_producer_client_delegates_flush_without_timeout(

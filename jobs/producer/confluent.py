@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from jobs.producer.publisher import KafkaDeliveryCallback
+
 try:
     from confluent_kafka import Producer
 except ImportError:  # pragma: no cover - exercised only without installed dependency
@@ -16,8 +18,23 @@ class ConfluentKafkaProducerClient:
             )
         self._producer = Producer(config)
 
-    def send(self, topic: str, key: bytes, value: bytes) -> object:
-        return self._producer.produce(topic=topic, key=key, value=value)
+    def send(
+        self,
+        topic: str,
+        key: bytes,
+        value: bytes,
+        *,
+        on_delivery: KafkaDeliveryCallback | None = None,
+    ) -> object:
+        produce_kwargs = {
+            "topic": topic,
+            "key": key,
+            "value": value,
+        }
+        if on_delivery is not None:
+            produce_kwargs["on_delivery"] = on_delivery
+
+        return self._producer.produce(**produce_kwargs)
 
     def flush(self, timeout: float | None = None) -> int:
         if timeout is None:

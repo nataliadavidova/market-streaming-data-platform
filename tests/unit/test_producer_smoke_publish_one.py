@@ -9,13 +9,24 @@ class FakeKafkaClient:
     def __init__(self) -> None:
         self.sent_messages: list[tuple[str, bytes, bytes]] = []
         self.flush_count = 0
+        self.delivery_callback = None
 
-    def send(self, topic: str, key: bytes, value: bytes) -> object:
+    def send(
+        self,
+        topic: str,
+        key: bytes,
+        value: bytes,
+        *,
+        on_delivery=None,
+    ) -> object:
         self.sent_messages.append((topic, key, value))
+        self.delivery_callback = on_delivery
         return object()
 
     def flush(self, timeout: float | None = None) -> int:
         self.flush_count += 1
+        if self.delivery_callback is not None:
+            self.delivery_callback(None, object())
         return 0
 
 
