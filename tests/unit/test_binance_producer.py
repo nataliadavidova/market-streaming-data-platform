@@ -61,11 +61,16 @@ def test_run_configured_binance_producer_assembles_runtime(monkeypatch) -> None:
     loaded_config_path = None
     built_bootstrap_servers = None
     publisher_arguments = None
+    received_connect = object()
 
     async def fake_run_binance_trade_publisher(
         received_config: ProducerConfig,
         received_publisher: object,
+        *,
+        connect=None,
     ) -> None:
+        nonlocal received_connect
+        received_connect = connect
         events.append("runner start")
         assert received_config is config
         assert received_publisher is publisher
@@ -123,7 +128,64 @@ def test_run_configured_binance_producer_assembles_runtime(monkeypatch) -> None:
         "topic": "market.trades.raw",
         "client": client,
     }
+    assert received_connect is None
     assert events == ["runner start", "runner finish", "client flush"]
+    assert client.flush_count == 1
+    assert client.flush_timeouts == [
+        binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
+    ]
+
+
+def test_run_configured_binance_producer_forwards_custom_connect_unchanged(
+    monkeypatch,
+) -> None:
+    config = valid_producer_config()
+    client = FakeKafkaClient()
+    publisher = object()
+    sentinel_connect = object()
+    received_connect = None
+
+    async def fake_run_binance_trade_publisher(
+        received_config: ProducerConfig,
+        received_publisher: object,
+        *,
+        connect=None,
+    ) -> None:
+        nonlocal received_connect
+        assert received_config is config
+        assert received_publisher is publisher
+        received_connect = connect
+
+    monkeypatch.setattr(
+        binance_producer,
+        "load_producer_config",
+        lambda _: config,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "build_kafka_client",
+        lambda _: client,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "KafkaPublisher",
+        lambda *, topic, client: publisher,
+    )
+    monkeypatch.setattr(
+        binance_producer,
+        "run_binance_trade_publisher",
+        fake_run_binance_trade_publisher,
+    )
+
+    asyncio.run(
+        binance_producer.run_configured_binance_producer(
+            "config.yaml",
+            "localhost:9092",
+            connect=sentinel_connect,
+        )
+    )
+
+    assert received_connect is sentinel_connect
     assert client.flush_count == 1
     assert client.flush_timeouts == [
         binance_producer.FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS
@@ -146,6 +208,8 @@ def test_run_configured_binance_producer_flushes_after_runtime_failure(
     async def fake_run_binance_trade_publisher(
         received_config: ProducerConfig,
         received_publisher: object,
+        *,
+        connect=None,
     ) -> None:
         nonlocal runner_call_count
         runner_call_count += 1
@@ -204,6 +268,8 @@ def test_run_configured_binance_producer_raises_when_final_flush_leaves_messages
     async def fake_run_binance_trade_publisher(
         received_config: ProducerConfig,
         received_publisher: object,
+        *,
+        connect=None,
     ) -> None:
         events.append("runner start")
         assert received_config is config
@@ -266,6 +332,8 @@ def test_run_configured_binance_producer_logs_final_flush_duration_when_flush_ra
     async def fake_run_binance_trade_publisher(
         received_config: ProducerConfig,
         received_publisher: object,
+        *,
+        connect=None,
     ) -> None:
         events.append("runner start")
         assert received_config is config
@@ -329,6 +397,8 @@ def test_run_configured_binance_producer_finalization_error_preserves_runtime_co
     async def fake_run_binance_trade_publisher(
         received_config: ProducerConfig,
         received_publisher: object,
+        *,
+        connect=None,
     ) -> None:
         events.append("runner start")
         assert received_config is config
@@ -666,7 +736,12 @@ def test_run_configured_binance_producer_overrides_config_topic(monkeypatch) -> 
     client = FakeKafkaClient()
     publisher_arguments = None
 
-    async def fake_runner(received_config, received_publisher) -> None:
+    async def fake_runner(
+        received_config,
+        received_publisher,
+        *,
+        connect=None,
+    ) -> None:
         assert received_config.kafka.raw_topic == "dedicated.topic"
 
     monkeypatch.setattr(binance_producer, "load_producer_config", lambda _: config)
@@ -802,7 +877,12 @@ def test_handled_sigterm_cancellation_returns_normally(monkeypatch, caplog) -> N
         state["requested"] = True
         yield
 
-    async def cancelled_runtime(received_config, received_publisher):
+    async def cancelled_runtime(
+        received_config,
+        received_publisher,
+        *,
+        connect=None,
+    ):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(binance_producer, "load_producer_config", lambda _: config)

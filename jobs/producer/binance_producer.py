@@ -15,6 +15,7 @@ from jobs.producer.binance_publisher import run_binance_trade_publisher
 from jobs.producer.config import load_producer_config
 from jobs.producer.confluent import build_kafka_client
 from jobs.producer.publisher import KafkaPublisher
+from jobs.producer.websocket import WebSocketConnect
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,8 @@ async def run_configured_binance_producer(
     config_path: str,
     bootstrap_servers: str,
     topic_override: str | None = None,
+    *,
+    connect: WebSocketConnect | None = None,
 ) -> None:
     config = load_producer_config(config_path)
     if topic_override:
@@ -120,7 +123,11 @@ async def run_configured_binance_producer(
 
             with _installed_sigterm_handler(loop, task, state):
                 try:
-                    await run_binance_trade_publisher(config, publisher)
+                    await run_binance_trade_publisher(
+                        config,
+                        publisher,
+                        connect=connect,
+                    )
                 except asyncio.CancelledError:
                     if not state["requested"]:
                         raise
