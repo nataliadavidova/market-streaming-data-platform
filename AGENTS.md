@@ -100,10 +100,9 @@ Current local service config:
 
 Latest repository state:
 
-- Latest commit: `f0004fc Enable Binance producer runtime logging`.
-- Focused producer tests: 25 passed.
-- Full suite: 185 passed.
-- The current documentation slice is not yet committed.
+- Reconnect implementation commit: `89ec8dd Add Binance producer reconnect`.
+- Focused producer lifecycle tests: 44 passed (`test_binance_publisher.py` and `test_binance_producer.py`).
+- Full suite: 196 passed.
 
 Verified runtime evidence:
 
@@ -112,8 +111,9 @@ Verified runtime evidence:
 - Spark restart with the same checkpoint resumed saved Kafka progress; the tested previously committed record was not replayed and a new record was written once.
 - Spark application-level SIGINT and SIGTERM, and producer SIGINT and SIGTERM, completed cleanly in the tested scenarios.
 - Producer SIGTERM observability showed three dedicated-topic records, return code `0`, final flush `remaining=0`, required INFO markers in order, observed shutdown duration `3.615s` with WebSocket context exit about `2.002s`, no forced cleanup, and no orphan process.
+- A controlled local two-session reconnect smoke published trade `990000000001` at Kafka offset `0`, observed a normal close, accepted session 2 after `5.005s`, published trade `990000000002` at offset `1`, logged recovery, remained alive, then handled SIGTERM with final flush `remaining=0`, exit code `0`, and no third session.
 
-These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, reconnect, arbitrary-crash, Kubernetes, or throughput guarantees.
+These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, replay/backfill, arbitrary-crash, Kubernetes, or throughput guarantees.
 
 Current producer modules:
 
@@ -142,7 +142,7 @@ Current implemented functions and models:
 - `receive_and_publish_one_binance_trade(receiver, publisher)`: receives one event, prepares one message, and publishes it.
 - `run_binance_trade_publish_loop(receiver, publisher)`: permanently repeats sequential receive/publish operations.
 - `run_binance_trade_publisher(config, publisher)`: owns the Binance receiver context around that loop.
-- `run_configured_binance_producer(config_path, bootstrap_servers, topic_override=None)`: loads config, applies an immutable topic override, builds the client/publisher, installs the SIGTERM lifecycle, runs the producer, and finalizes Kafka.
+- `run_configured_binance_producer(config_path, bootstrap_servers, topic_override=None, *, connect=None)`: loads config, applies an immutable topic override, builds the client/publisher, installs the SIGTERM lifecycle, runs the producer, and finalizes Kafka; `connect` is an injectable WebSocket seam for controlled tests.
 - `python -m jobs.producer.binance_producer`: executable command with `--topic` → `KAFKA_TOPIC_TRADES_RAW` → YAML precedence, `KAFKA_BOOTSTRAP_SERVERS` with `localhost:9092` fallback, and standalone INFO logging.
 
 Producer shutdown contract:
@@ -161,7 +161,8 @@ Spark/Iceberg contract:
 
 Known limitations and backlog:
 
-- Reconnect settings exist in configuration, but a reconnect loop is not implemented.
+- The reconnect loop retries only classified WebSocket connection-establishment and receive transport failures; parser, configuration, programming, and Kafka publication failures remain fatal.
+- Reconnect does not replay or backfill trades missed while the Binance connection is unavailable.
 - Delivery callbacks and explicit delivery acknowledgement observability are not implemented.
 - Kafka idempotent producer mode is not enabled.
 - Per-message Kafka flush remains enabled; throughput benchmarking and optimization are pending.
@@ -178,7 +179,7 @@ Other Markdown status:
 Next stage:
 
 - This documentation milestone is the current slice.
-- After it, make a read-only decision between Binance reconnect, delivery observability/callbacks, and producer throughput/per-message flush.
+- Reconnect is complete in the tested scope. Next, make a read-only decision between delivery observability/callbacks, producer throughput/per-message flush, and monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
 ## Python environment
@@ -235,10 +236,10 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-After this documentation slice, perform a read-only decision between Binance reconnect, delivery observability/callbacks, and producer throughput/per-message flush. Keep those three reliability areas separate; do not implement them together.
+Reconnect is implemented and live-smoke tested. Perform a read-only decision between delivery observability/callbacks, producer throughput/per-message flush, and monitoring. Keep those reliability areas separate; do not implement them together.
 
 Current test suite:
 
-- 25 focused producer tests pass.
-- 185 tests pass in the full suite.
+- 44 focused producer lifecycle tests pass.
+- 196 tests pass in the full suite.
 - Tests are not automatically rerun for documentation-only changes unless explicitly requested.

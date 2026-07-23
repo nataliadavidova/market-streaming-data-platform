@@ -58,6 +58,9 @@ Implemented foundation:
 - `TradeEvent` modeling and deterministic JSON serialization with decimal values preserved as strings.
 - Binance combined trade-stream URL construction, receive, and parsing for `BTCUSDT`, `ETHUSDT`, and `SOLUSDT`.
 - Reusable Binance WebSocket receiver session and sequential publish loop.
+- Automatic reconnect around complete WebSocket sessions for classified connection and receive transport failures.
+- Capped exponential reconnect backoff from 5 to 60 seconds, reset after the first successful Kafka publication in a recovered session.
+- Parser, configuration, programming, and Kafka publication failures remain fail-fast; cancellation is not reconnectable.
 - Kafka message preparation, `KafkaPublisher`, and the Confluent Kafka adapter.
 - Executable Binance-to-Kafka producer: `python -m jobs.producer.binance_producer`.
 - CLI topic override with precedence `--topic -> KAFKA_TOPIC_TRADES_RAW -> config.kafka.raw_topic`.
@@ -172,6 +175,13 @@ The following scenarios have been executed with dedicated runtime resources:
 - All required lifecycle markers appeared in order.
 - No forced cleanup or orphan process remained.
 
+### Producer reconnect
+
+- A controlled local two-session smoke published trade `990000000001` at Kafka offset `0`, observed a normal WebSocket close, and accepted session 2 after `5.005s`.
+- Trade `990000000002` was published at Kafka offset `1`; recovery was logged after the first successful publication in session 2.
+- The producer remained alive after reconnect, then handled `SIGTERM`, flushed with `remaining=0`, exited `0`, and opened no third session.
+- Each smoke event appeared once. This is a controlled observation, not a general exactly-once, no-loss, or no-duplication guarantee.
+
 These are controlled smoke results, not universal delivery or failure-safety guarantees.
 
 ## Local development
@@ -194,7 +204,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 185 tests passed. Focused producer tests: 25 passed.
+Latest verified suite: 196 tests passed. Focused producer lifecycle tests: 44 passed (`test_binance_publisher.py` and `test_binance_producer.py`).
 
 ## Manual smoke checks
 
@@ -208,7 +218,8 @@ The broader Binance -> Kafka -> Spark -> Iceberg and checkpoint-recovery results
 
 ## Limitations and backlog
 
-- Reconnect settings exist in configuration, but a reconnect loop is not implemented.
+- Reconnect covers classified WebSocket connection/session transport failures only; it does not replay or backfill trades missed while disconnected.
+- WebSocket reconnect is not Kafka recovery, delivery acknowledgement, deduplication, or an end-to-end exactly-once guarantee.
 - Kafka delivery callbacks and explicit delivery acknowledgement observability are not implemented.
 - Kafka idempotent producer mode is not enabled.
 - The producer still flushes after every message; throughput benchmarking and optimization are pending.

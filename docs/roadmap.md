@@ -45,12 +45,15 @@ Completed:
 - Graceful Spark SIGINT and SIGTERM shutdown with query-before-Spark cleanup order.
 - Graceful producer SIGINT and SIGTERM shutdown with bounded final Kafka flush.
 - Runtime INFO logging for producer lifecycle and final-flush markers.
+- Automatic reconnect around complete Binance WebSocket sessions for classified connection and receive transport failures.
+- Configured capped exponential reconnect backoff from 5 to 60 seconds, reset after successful publication in a recovered session.
+- Controlled two-session reconnect smoke with Kafka offsets `0` and `1`, successful SIGTERM cleanup, and no third session.
 - Focused unit coverage for bounded Kafka finalization.
 - Unit-test CI with GitHub Actions.
 
 In progress:
 
-- Documentation consistency for the completed ingestion milestone.
+- None.
 
 Planned:
 
@@ -60,12 +63,12 @@ Planned:
 - Per-message flush timeout or removal.
 - Delivery or undelivered-message logging and metrics.
 - Second-`SIGINT` escalation behavior and bounded escalation policy.
-- Retry and reconnect behavior.
 - Delivery acknowledgement handling.
 - Improve throughput.
 - Extended logging and metrics beyond the verified lifecycle markers.
 - Producer container and deployment configuration.
 - Gap detection, backfill, and deduplication strategy.
+- Reconnect monitoring and alerting beyond the tested lifecycle logs.
 - Additional stream validation, normalization, and data-quality checks.
 - ClickHouse aggregate writes.
 - Dashboard or analytical SQL layer.

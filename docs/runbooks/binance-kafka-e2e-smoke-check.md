@@ -217,7 +217,18 @@ git status --short
 - Final application-level Kafka flush has a 5.0-second timeout and raises `KafkaFinalizationError` if messages remain queued.
 - Per-message Kafka flush still has no explicit timeout, and its return value remains ignored.
 - Delivery callbacks and undelivered-message logging or metrics do not exist.
-- No retry or reconnect behavior.
+- The long-running producer reconnects after classified WebSocket connection-establishment and receive transport failures with capped exponential backoff from 5 to 60 seconds.
+- Reconnect does not replay or backfill trades missed while disconnected, and it does not retry parser or Kafka publication failures.
 - Per-message flush remains enabled.
 - No high-throughput validation.
 - No containerized producer execution.
+
+## Controlled Reconnect Smoke Evidence
+
+The ordinary live Binance-to-Kafka procedure above does not require a connection failure and may complete without exercising reconnect. A separate local two-session smoke used a temporary WebSocket server and the real configured producer lifecycle:
+
+- Session 1 published trade `990000000001` at Kafka offset `0` and then closed normally.
+- Session 2 was accepted after `5.005s` and published trade `990000000002` at offset `1`.
+- Recovery was logged after the first successful publication in session 2.
+- The producer remained alive after reconnect, then handled SIGTERM, finalized Kafka with `remaining=0`, exited `0`, and opened no third session.
+- Each test event appeared once in that run. This does not establish exactly-once, no-loss, no-duplication, replay, or backfill guarantees.

@@ -95,4 +95,4 @@ No local service cleanup is required. The WebSocket connection context closes af
 - If connection or receive fails, check network access, DNS/TLS behavior, and Binance availability.
 - If parsing fails, inspect whether Binance changed the combined-stream envelope or trade payload shape.
 - The executable Binance-to-Kafka path is covered separately by the end-to-end smoke runbook.
-- Producer graceful SIGINT/SIGTERM and bounded final Kafka flush are implemented and live-tested separately; retry/reconnect, delivery acknowledgement handling, and throughput optimization are not implemented yet.
+- Producer graceful SIGINT/SIGTERM, bounded final Kafka flush, and long-running WebSocket reconnect are implemented and tested separately. This one-shot helper intentionally opens a short-lived session for one event and does not exercise the reconnect owner. Delivery acknowledgement handling and throughput optimization remain unimplemented.

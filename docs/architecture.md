@@ -52,6 +52,9 @@ Implemented:
 - Binance combined-stream JSON messages can be parsed into `TradeEvent`.
 - One-shot Binance receive-and-parse composition can return one real `TradeEvent`.
 - A reusable Binance trade receiver session keeps one WebSocket connection open and returns parsed `TradeEvent` objects through repeated explicit receive calls.
+- `run_binance_trade_publisher(...)` owns an outer reconnect loop around complete WebSocket sessions. Classified connection-establishment and receive transport failures exit the current context before cancellation-aware backoff and the next session.
+- Backoff is exponential from the configured 5-second initial delay, capped at 60 seconds, and resets only after the first successfully published trade in a recovered session.
+- Parser, configuration, programming, and Kafka publication failures are fail-fast; cancellation during receive or backoff propagates through normal cleanup.
 - Kafka message preparation creates deterministic key/value payloads from `TradeEvent`.
 - `KafkaPublisher` and `ConfluentKafkaProducerClient` provide injectable publishing boundaries.
 - `KafkaProducerClient.flush(timeout=None)` returns the number of messages still queued after a flush attempt.
@@ -96,7 +99,8 @@ Current Kafka finalization contract:
 
 Current operational semantics:
 
-- One reusable Binance WebSocket connection is kept open during the producer runtime.
+- Each active Binance session keeps one WebSocket connection open; the outer producer runtime replaces a session after a classified transport failure.
+- Reconnect restores the live session only. It does not replay or backfill trades missed while disconnected.
 - Processing is sequential and preserves event order within the application path.
 - Kafka publishing is synchronous.
 - Per-message flush remains enabled. `KafkaPublisher.publish_message(..., flush=True)` still calls `client.flush()` with no explicit timeout after every message, and that return value remains ignored.
@@ -116,13 +120,14 @@ Manual checks completed:
 - Bounded local console consume-check has read the synthetic event from Kafka.
 - Manual live one-shot Binance smoke-check has connected to Binance, received one real combined-stream trade message, parsed it into `TradeEvent`, and closed normally.
 - Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published fresh real Binance `TradeEvent` records, consumed them with a fresh latest-offset consumer group, and verified clean producer shutdown.
+- Controlled local two-session reconnect smoke-check has published trades at Kafka offsets `0` and `1`, observed the second connection after `5.005s`, logged recovery after successful publication, handled SIGTERM with final flush `remaining=0`, exited `0`, and opened no third session.
 - Dedicated Binance -> Kafka -> Spark -> Iceberg smoke-checks have verified Bronze writes, S3A checkpoint progress, checkpoint recovery, and clean application-level Spark SIGINT/SIGTERM shutdown.
 
 ## Planned Target Architecture
 
 Planned but not implemented:
 
-- Retry and reconnect behavior.
+- Replay, backfill, and gap recovery for trades missed during a WebSocket outage.
 - WebSocket close-timeout tuning or instrumentation.
 - Shutdown-stage timing.
 - Per-message flush timeout, per-message flush removal, and throughput optimization.
