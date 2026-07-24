@@ -115,6 +115,18 @@ Deployment values are supplied through the existing environment contract. See [.
 
 The target does not start infrastructure or bootstrap tables automatically. Start Kafka, MinIO, and Iceberg REST explicitly, and use a dedicated topic/table/checkpoint for smoke tests.
 
+## Inspecting Iceberg
+
+Use the read-only Bronze inspection workflow to review the current table identity and location, schema, row count, Iceberg snapshots and history, data files, and partition metadata:
+
+```bash
+make iceberg-up
+make iceberg-inspect
+make iceberg-down
+```
+
+The inspector reads an existing table without creating or modifying it, starting a streaming query, or inspecting/changing the Spark checkpoint. `COUNT(*)` is appropriate for the current small local dataset, but can be expensive on a large table. See the [Iceberg inspection runbook](docs/runbooks/iceberg-inspection.md) for prerequisites, output interpretation, and the controlled runtime evidence.
+
 ## Shutdown behavior
 
 ### Producer
@@ -215,7 +227,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 202 tests passed. Focused reconnect lifecycle tests: 19 passed in `tests/unit/test_binance_publisher.py`.
+Latest verified suite: 222 tests passed. Focused inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`. Focused reconnect lifecycle tests remain 19 passed in `tests/unit/test_binance_publisher.py`.
 
 ## Manual smoke checks
 

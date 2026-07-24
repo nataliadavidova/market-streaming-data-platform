@@ -91,6 +91,8 @@ Current architecture boundaries:
 - MinIO stores Iceberg data, metadata, and checkpoint objects for local smoke runs.
 - Production Bronze must not be used for destructive smoke tests; use a dedicated topic, table, and checkpoint.
 
+The read-only Iceberg inspection workflow is implemented through `make iceberg-inspect` and `jobs.streaming.iceberg_inspection`. It reports existing Bronze table identity, schema, row count, snapshots, history, data files, and partition metadata without creating or mutating tables, starting a streaming query, or reading checkpoints.
+
 Current local service config:
 
 - `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
@@ -101,10 +103,12 @@ Current local service config:
 Latest repository state:
 
 - Reconnect lifecycle observability commit: `515b1e1 Add reconnect lifecycle observability`.
+- Iceberg inspection implementation commit: `2d6ec09 Add Iceberg inspection workflow`.
 - Delivery-result observation commit: `52124a8 Observe Kafka delivery results`.
 - Reconnect implementation commit: `89ec8dd Add Binance producer reconnect`.
 - Focused reconnect lifecycle tests: 19 passed in `test_binance_publisher.py`.
-- Full suite: 202 passed.
+- Focused Iceberg inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`.
+- Full suite: 222 passed.
 
 Verified runtime evidence:
 
@@ -116,6 +120,7 @@ Verified runtime evidence:
 - A controlled local two-session reconnect smoke published trade `990000000001` at Kafka offset `0`, observed a normal close, accepted session 2 after `5.005s`, published trade `990000000002` at offset `1`, logged recovery, remained alive, then handled SIGTERM with final flush `remaining=0`, exit code `0`, and no third session.
 - The reconnect observability smoke emitted `BINANCE_RECONNECT_ATTEMPT attempt=1 delay_seconds=5.0 failure_type=ConnectionClosedOK`, measured `5.004438s` from session close to session 2 acceptance, emitted `BINANCE_RECONNECT_RECOVERED attempt=1 recovery_after_seconds=5.024`, and completed SIGTERM with exit code `0`, final flush `remaining=0`, and no third session. These logs are process-local evidence, not durable monitoring.
 - A real local-Kafka delivery-result smoke used the production publisher and adapter; `publish_message(..., flush=True)` returned after callback success, and the exact key/value was read back with the dedicated topic end offset advancing by one.
+- A controlled Iceberg inspection smoke passed against Spark 4.1.2, Iceberg 1.11.0, the Iceberg REST catalog, and MinIO. The existing Bronze table was inspected twice without a new snapshot or data file. Its unpartitioned `partitions` relation returned one aggregate statistics row without a `partition` column, which the inspector reports explicitly.
 
 These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, replay/backfill, arbitrary-crash, Kubernetes, or throughput guarantees.
 
@@ -162,6 +167,7 @@ Spark/Iceberg contract:
 - `jobs/streaming/iceberg_trade_streaming_job.py` reads Kafka, parses the typed Bronze contract, writes through the native Iceberg streaming sink, and uses a query-specific S3A checkpoint.
 - Iceberg uses the REST catalog plus S3FileIO; MinIO stores data and metadata objects locally.
 - Graceful Spark shutdown uses a shutdown event, timed `awaitTermination` polling, `query.stop()` before `spark.stop()`, and handler restoration after cleanup.
+- `jobs/streaming/iceberg_inspection.py` provides a bounded, read-only table inspection CLI. It validates safe dotted identifiers, uses the existing Iceberg-enabled Spark configuration, and stops its owned Spark session while preserving inspection errors when cleanup also fails.
 
 Known limitations and backlog:
 
@@ -187,7 +193,7 @@ Other Markdown status:
 
 Next stage:
 
-- This documentation milestone is the current slice.
+- The completed read-only Iceberg inspection workflow is the current storage milestone. The next storage slice is a narrow Bronze data-quality contract; keep its validity rules and deterministic handling separate from Silver design and maintenance work.
 - Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and broader monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
@@ -245,7 +251,7 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are implemented and tested. Perform a read-only decision between producer throughput/per-message flush and broader monitoring. Keep these reliability areas separate; do not implement them together.
+Reconnect, default-path delivery-result observation, reconnect lifecycle logging, and read-only Iceberg inspection are implemented and tested. The next storage slice is a narrow Bronze data-quality contract. Keep producer throughput/per-message flush and broader monitoring separate from that storage work.
 
 ## Historical pre-52124a8 next step
 
@@ -253,6 +259,7 @@ Reconnect is implemented and live-smoke tested. Perform a read-only decision bet
 
 Current test suite:
 
+- 20 focused Iceberg inspection tests pass in `tests/unit/test_streaming_iceberg_inspection.py`.
 - 19 focused reconnect lifecycle tests pass in `tests/unit/test_binance_publisher.py`.
-- 202 tests pass in the full suite.
+- 222 tests pass in the full suite.
 - Tests are not automatically rerun for documentation-only changes unless explicitly requested.

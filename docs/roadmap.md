@@ -41,6 +41,8 @@ Completed:
 - Spark Kafka source and typed Bronze parser.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific Hadoop S3A checkpoint configuration.
+- Read-only Iceberg inspection workflow (`2d6ec09 Add Iceberg inspection workflow`) covering table identity, schema, row count, snapshots, history, data files, and partition metadata through `make iceberg-inspect`.
+- Controlled Spark 4.1.2 / Iceberg 1.11.0 / Iceberg REST / MinIO inspection smoke, with 20 focused inspection tests and 222 tests in the full suite.
 - Dedicated Kafka → Spark → Iceberg smoke with checkpoint progress and recovery verification.
 - Graceful Spark SIGINT and SIGTERM shutdown with query-before-Spark cleanup order.
 - Graceful producer SIGINT and SIGTERM shutdown with bounded final Kafka flush.
@@ -62,6 +64,7 @@ In progress:
 
 Planned:
 
+- Bronze data-quality contract with explicit validity rules and deterministic handling.
 - Shutdown-latency investigation.
 - WebSocket close-timeout tuning or instrumentation.
 - Shutdown-stage timing.
@@ -75,6 +78,8 @@ Planned:
 - Gap detection, backfill, and deduplication strategy.
 - Reconnect monitoring and alerting beyond the tested lifecycle logs.
 - Additional stream validation, normalization, and data-quality checks.
+- Silver transformation layer.
+- Iceberg storage monitoring, maintenance, compaction, and schema-evolution work.
 - ClickHouse aggregate writes.
 - Dashboard or analytical SQL layer.
 

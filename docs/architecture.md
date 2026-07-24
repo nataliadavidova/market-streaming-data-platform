@@ -18,6 +18,12 @@ Spark processing progress is persisted separately:
 
 `Spark checkpoint -> Hadoop S3A -> MinIO`
 
+The read-only inspection path is separate from ingestion and writes:
+
+`Spark/Iceberg inspector -> Iceberg REST catalog -> Bronze table metadata -> MinIO-backed data and metadata`
+
+The inspector reads table state through the existing Iceberg-enabled Spark configuration. It does not start the streaming query, write the table, or inspect or mutate the Spark checkpoint.
+
 The broader target remains:
 
 `... -> Iceberg -> ClickHouse -> dashboard + basic DQ checks`
@@ -34,6 +40,7 @@ ClickHouse and dashboard serving are not part of the current implementation.
 - REST catalog + S3FileIO: resolves Iceberg metadata and reads/writes table objects in S3-compatible storage.
 - Hadoop S3A: stores Spark checkpoint objects independently from Iceberg table metadata.
 - MinIO: local S3-compatible storage for Iceberg data, metadata, and Spark checkpoints.
+- Iceberg inspection CLI: reads an existing table's identity, schema, row count, snapshots, history, data files, and partition metadata without table mutation.
 - ClickHouse: low-latency analytical serving layer for aggregates and dashboard queries.
 - Dashboard or SQL layer: user-facing analysis surface.
 - Data-quality checks: basic validation for freshness, schema expectations, and event quality.
@@ -71,6 +78,22 @@ Implemented:
 - `make iceberg-trade-stream` runs the Spark Kafka source, typed Bronze parser, native Iceberg streaming sink, and query-specific S3A checkpoint.
 - A dedicated Kafka topic, Iceberg table, and checkpoint are required for runtime smoke tests; production Bronze is not a smoke target.
 - GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
+
+## Iceberg Inspection Boundary
+
+The inspection workflow has a different responsibility from the streaming write path:
+
+`Kafka -> Spark Structured Streaming -> Bronze Iceberg -> MinIO`
+
+persists trade rows, while:
+
+`Spark/Iceberg inspector -> REST catalog and MinIO`
+
+describes the resulting table state. Table data is the actual trade rows in Parquet data files. Iceberg metadata describes that data through schemas, snapshots, history, manifests, file references, and partition information. The Spark checkpoint is separate query-progress state containing streaming progress and Kafka-offset information; it is not part of the inspector's table inspection.
+
+The inspector uses bounded, read-only queries for table identity, schema, row count, snapshots, history, files, and partitions. The current Bronze table is unpartitioned. In the tested Spark 4.1.2 / Iceberg 1.11.0 runtime, `<table>.partitions` returned one aggregate statistics row without a `partition` column, so the inspector reports `unpartitioned table (aggregate table statistics)` and preserves the aggregate fields. Metadata relation schemas can vary across Iceberg versions; this behavior is not a universal metadata contract.
+
+The inspector owns and stops the Spark session it creates. Inspection errors retain their original Spark/catalog cause, and a cleanup failure is recorded without replacing an earlier inspection failure. The workflow does not create tables, execute writes or maintenance procedures, start streaming, or inspect checkpoints.
 
 Implemented executable producer flow:
 
