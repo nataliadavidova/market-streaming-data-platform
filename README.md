@@ -47,6 +47,7 @@ Current and planned technologies:
 - Producer graceful SIGINT: live-tested.
 - Producer graceful SIGTERM: live-tested.
 - Producer shutdown/final-flush INFO logging: implemented and live-tested.
+- Reconnect lifecycle observability: implemented and controlled-smoke tested.
 
 This is a verified ingestion milestone, not a claim that the whole Version 1 platform is complete.
 
@@ -60,6 +61,7 @@ Implemented foundation:
 - Reusable Binance WebSocket receiver session and sequential publish loop.
 - Automatic reconnect around complete WebSocket sessions for classified connection and receive transport failures.
 - Capped exponential reconnect backoff from 5 to 60 seconds, reset after the first successful Kafka publication in a recovered session.
+- Process-local reconnect lifecycle logs expose the incident attempt number, configured delay, retryable failure type, and monotonic disconnected duration after successful recovery.
 - Parser, configuration, programming, and Kafka publication failures remain fail-fast; cancellation is not reconnectable.
 - Kafka message preparation, `KafkaPublisher`, and the Confluent Kafka adapter.
 - Default `KafkaPublisher.publish_message(..., flush=True)` observes the per-message Kafka delivery callback and raises `KafkaDeliveryError` for a reported failure or a missing callback result.
@@ -179,10 +181,10 @@ The following scenarios have been executed with dedicated runtime resources:
 
 ### Producer reconnect
 
-- A controlled local two-session smoke published trade `990000000001` at Kafka offset `0`, observed a normal WebSocket close, and accepted session 2 after `5.005s`.
-- Trade `990000000002` was published at Kafka offset `1`; recovery was logged after the first successful publication in session 2.
-- The producer remained alive after reconnect, then handled `SIGTERM`, flushed with `remaining=0`, exited `0`, and opened no third session.
-- Each smoke event appeared once. This is a controlled observation, not a general exactly-once, no-loss, or no-duplication guarantee.
+- A controlled local two-session smoke emitted one `BINANCE_RECONNECT_ATTEMPT` warning with the configured five-second delay.
+- Session 2 was accepted about five seconds after the first close, and `BINANCE_RECONNECT_RECOVERED` reported about five seconds from the first failure through successful Kafka publication.
+- Two expected Kafka records were produced; the producer remained alive after recovery, then handled `SIGTERM`, flushed with `remaining=0`, exited `0`, and opened no third session.
+- This is process-local lifecycle evidence. The two observed records are not a general exactly-once, no-loss, or no-duplication guarantee.
 
 These are controlled smoke results, not universal delivery or failure-safety guarantees.
 
@@ -213,7 +215,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 201 tests passed. Focused publisher/producer tests: 39 passed across `test_producer_publisher.py`, `test_producer_confluent.py`, `test_binance_publisher.py`, and `test_producer_smoke_publish_one.py`.
+Latest verified suite: 202 tests passed. Focused reconnect lifecycle tests: 19 passed in `tests/unit/test_binance_publisher.py`.
 
 ## Manual smoke checks
 
@@ -231,6 +233,7 @@ The broader Binance -> Kafka -> Spark -> Iceberg and checkpoint-recovery results
 - WebSocket reconnect is not Kafka recovery, delivery acknowledgement policy, deduplication, or an end-to-end exactly-once guarantee.
 - On the default `flush=True` path, callback success is distinct from local queue acceptance and final-flush `remaining=0`; it is not an end-to-end exactly-once guarantee.
 - `KafkaDeliveryError` makes callback-reported or missing per-message delivery results explicit, but broader acknowledgement policy and delivery metrics are not implemented.
+- Reconnect lifecycle logs are process-local and do not provide persistent counters, uptime, run/session identifiers, metrics export, dashboards, or alerting.
 - Kafka idempotent producer mode is not enabled.
 - The producer still performs synchronous per-message `flush()` with no explicit timeout, which limits batching and throughput; its return value is not yet used as a queue policy.
 - `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.

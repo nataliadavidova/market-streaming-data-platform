@@ -54,6 +54,7 @@ Implemented:
 - A reusable Binance trade receiver session keeps one WebSocket connection open and returns parsed `TradeEvent` objects through repeated explicit receive calls.
 - `run_binance_trade_publisher(...)` owns an outer reconnect loop around complete WebSocket sessions. Classified connection-establishment and receive transport failures exit the current context before cancellation-aware backoff and the next session.
 - Backoff is exponential from the configured 5-second initial delay, capped at 60 seconds, and resets only after the first successfully published trade in a recovered session.
+- The reconnect owner keeps incident-local `reconnect_attempt` and `disconnected_since` state. Each retryable failure logs `BINANCE_RECONNECT_ATTEMPT` with the attempt, unchanged delay, and failure type; after the first successful Kafka publication in the recovered session it logs `BINANCE_RECONNECT_RECOVERED` with the attempt and monotonic disconnected duration, then resets the state.
 - Parser, configuration, programming, and Kafka publication failures are fail-fast; cancellation during receive or backoff propagates through normal cleanup.
 - Kafka message preparation creates deterministic key/value payloads from `TradeEvent`.
 - `KafkaPublisher` and `ConfluentKafkaProducerClient` provide injectable publishing boundaries.
@@ -110,6 +111,8 @@ Current operational semantics:
 
 - Each active Binance session keeps one WebSocket connection open; the outer producer runtime replaces a session after a classified transport failure.
 - Reconnect restores the live session only. It does not replay or backfill trades missed while disconnected.
+- A WebSocket opening is not the recovery boundary: recovery is declared only after the recovered session publishes its first trade successfully to Kafka. Attempt numbers and timing are incident-local process state, not durable metrics.
+- The monotonic clock measures disconnected duration only; the existing injected async sleep controls backoff scheduling. Lifecycle markers contain no trade payloads or Kafka values.
 - Processing is sequential and preserves event order within the application path.
 - Kafka publishing is synchronous.
 - Per-message flush remains enabled. `KafkaPublisher.publish_message(..., flush=True)` calls `client.flush()` with no explicit timeout after every message, then inspects the per-message callback result; the flush return value remains ignored as a queue policy.
@@ -131,6 +134,7 @@ Manual checks completed:
 - Manual live one-shot Binance smoke-check has connected to Binance, received one real combined-stream trade message, parsed it into `TradeEvent`, and closed normally.
 - Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published fresh real Binance `TradeEvent` records, consumed them with a fresh latest-offset consumer group, and verified clean producer shutdown.
 - Controlled local two-session reconnect smoke-check has published trades at Kafka offsets `0` and `1`, observed the second connection after `5.005s`, logged recovery after successful publication, handled SIGTERM with final flush `remaining=0`, exited `0`, and opened no third session.
+- Reconnect observability smoke-check has emitted `BINANCE_RECONNECT_ATTEMPT attempt=1 delay_seconds=5.0 failure_type=ConnectionClosedOK` and `BINANCE_RECONNECT_RECOVERED attempt=1 recovery_after_seconds=5.024`; the external close-to-session-2 delay was `5.004438s`.
 - Controlled local-Kafka delivery-result smoke-check has returned successfully from the default publisher path after callback success and read back the exact published key/value with one new record.
 - Dedicated Binance -> Kafka -> Spark -> Iceberg smoke-checks have verified Bronze writes, S3A checkpoint progress, checkpoint recovery, and clean application-level Spark SIGINT/SIGTERM shutdown.
 
@@ -146,6 +150,7 @@ Planned but not implemented:
 - Broader delivery acknowledgement policy beyond the per-message callback result.
 - Producer container execution.
 - Delivery or undelivered-message logging and metrics.
+- Persistent reconnect counters, aggregate shutdown summaries, periodic health reporting, metrics export, dashboards, and alerts.
 - ClickHouse aggregate loading.
 - Dashboard or analytical SQL layer.
 - Production-like observability, consumer lag monitoring, and reliability features.

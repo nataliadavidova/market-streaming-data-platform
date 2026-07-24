@@ -51,6 +51,8 @@ Completed:
 - Automatic reconnect around complete Binance WebSocket sessions for classified connection and receive transport failures.
 - Configured capped exponential reconnect backoff from 5 to 60 seconds, reset after successful publication in a recovered session.
 - Controlled two-session reconnect smoke with Kafka offsets `0` and `1`, successful SIGTERM cleanup, and no third session.
+- Reconnect lifecycle observability: incident-local attempt number, configured delay, retryable failure type, and monotonic disconnected duration through first successful recovery publication.
+- Controlled reconnect observability smoke confirming the lifecycle markers and approximately five-second recovery timing.
 - Focused unit coverage for bounded Kafka finalization.
 - Unit-test CI with GitHub Actions.
 
@@ -68,7 +70,7 @@ Planned:
 - Second-`SIGINT` escalation behavior and bounded escalation policy.
 - Broader Kafka delivery acknowledgement policy beyond the per-message callback result.
 - Improve throughput.
-- Extended logging and metrics beyond the verified lifecycle markers.
+- Persistent reconnect/delivery counters, aggregate shutdown summaries, periodic health reporting, and metrics export beyond the verified lifecycle markers.
 - Producer container and deployment configuration.
 - Gap detection, backfill, and deduplication strategy.
 - Reconnect monitoring and alerting beyond the tested lifecycle logs.

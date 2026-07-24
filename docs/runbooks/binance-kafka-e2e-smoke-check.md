@@ -229,8 +229,23 @@ git status --short
 
 The ordinary live Binance-to-Kafka procedure above does not require a connection failure and may complete without exercising reconnect. A separate local two-session smoke used a temporary WebSocket server and the real configured producer lifecycle:
 
-- Session 1 published trade `990000000001` at Kafka offset `0` and then closed normally.
-- Session 2 was accepted after `5.005s` and published trade `990000000002` at offset `1`.
-- Recovery was logged after the first successful publication in session 2.
+- Session 1 published trade `990000000001` at Kafka offset `0`, then closed normally. The producer emitted exactly one warning:
+
+  ```text
+  BINANCE_RECONNECT_ATTEMPT attempt=1 delay_seconds=5.0 failure_type=ConnectionClosedOK
+  ```
+
+- The external interval from session 1 close to session 2 acceptance was `5.004438s`, consistent with the configured five-second initial backoff.
+- Session 2 was accepted after the backoff and published trade `990000000002` at offset `1`. After that publication completed successfully, the producer emitted exactly one info event:
+
+  ```text
+  BINANCE_RECONNECT_RECOVERED attempt=1 recovery_after_seconds=5.024
+  ```
+
+  The logged duration is slightly longer than the external close-to-acceptance interval because recovery ends after the recovered session receives, parses, and publishes the next event to Kafka, not when the socket merely opens.
+- In this isolated smoke, the dedicated topic end offset increased from `0` to `2`; the two observed records at offsets `0` and `1` are controlled evidence, not an exactly-once or no-duplicates guarantee.
+- The lifecycle markers contained no trade payload or Kafka value.
 - The producer remained alive after reconnect, then handled SIGTERM, finalized Kafka with `remaining=0`, exited `0`, and opened no third session.
+- The observed controlled-smoke shutdown duration was approximately `0.076s`; this is runtime evidence, not a shutdown SLA or universal performance guarantee.
 - Each test event appeared once in that run. This does not establish exactly-once, no-loss, no-duplication, replay, or backfill guarantees.
+- This is isolated process-local lifecycle evidence, not a persistent counter, monitoring history, dashboard, alert, or general observability guarantee.
