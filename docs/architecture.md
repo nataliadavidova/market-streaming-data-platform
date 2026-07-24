@@ -82,14 +82,23 @@ Current lifecycle ownership:
 - `run_binance_trade_publisher(...)`: Binance receiver-session lifecycle.
 - Publish loop: permanent sequential repetition.
 - Per-event operation: one receive and one publish.
-- `KafkaPublisher`: topic selection, send, and current per-message flush behavior.
+- `KafkaPublisher`: topic selection, send, per-message delivery-result observation, and current per-message flush behavior.
+
+Current Kafka publication boundary:
+
+- `ConfluentKafkaProducerClient.send()` calls `Producer.produce()`; a successful return means local librdkafka queue acceptance, not delivery confirmation.
+- On the default `KafkaPublisher.publish_message(..., flush=True)` path, one local delivery-result state and callback belong to that publication only.
+- The callback is processed during the existing synchronous `client.flush()` call. It records the result and does not raise into librdkafka.
+- After flush, `KafkaPublisher` returns only for an observed callback with `error is None`; a callback error or missing callback result raises `KafkaDeliveryError`.
+- A Kafka delivery failure propagates through the publisher and remains outside the Binance WebSocket reconnect boundary.
+- `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.
 
 Current Kafka finalization contract:
 
 - Generic Kafka adapter code does not own timeout policy.
 - The executable application assembly owns the final Kafka flush because it creates the concrete client.
 - Final application flush uses `FINAL_KAFKA_FLUSH_TIMEOUT_SECONDS = 5.0`.
-- Zero remaining messages means finalization succeeded.
+- Zero remaining messages means the final application queue was empty after finalization; it is not a per-message callback or exactly-once guarantee.
 - Nonzero remaining messages raise `KafkaFinalizationError`.
 - If runtime succeeds and finalization succeeds, the application returns normally.
 - If runtime succeeds and messages remain queued, `KafkaFinalizationError` propagates.
@@ -103,7 +112,8 @@ Current operational semantics:
 - Reconnect restores the live session only. It does not replay or backfill trades missed while disconnected.
 - Processing is sequential and preserves event order within the application path.
 - Kafka publishing is synchronous.
-- Per-message flush remains enabled. `KafkaPublisher.publish_message(..., flush=True)` still calls `client.flush()` with no explicit timeout after every message, and that return value remains ignored.
+- Per-message flush remains enabled. `KafkaPublisher.publish_message(..., flush=True)` calls `client.flush()` with no explicit timeout after every message, then inspects the per-message callback result; the flush return value remains ignored as a queue policy.
+- This synchronous no-timeout flush limits batching and throughput; polling, batching, backpressure, and flush redesign remain future work.
 - Only the application-level final flush currently uses the 5.0-second timeout.
 - Exceptions propagate naturally.
 - On `SIGINT`, Python `asyncio.run(...)` cancels the main task, cancellation unwinds the Binance/WebSocket contexts, application assembly performs a final Kafka flush, `asyncio.run(...)` surfaces `KeyboardInterrupt`, and `main()` treats that top-level interruption as expected operator shutdown.
@@ -121,6 +131,7 @@ Manual checks completed:
 - Manual live one-shot Binance smoke-check has connected to Binance, received one real combined-stream trade message, parsed it into `TradeEvent`, and closed normally.
 - Manual bounded Binance-to-Kafka smoke-check has run the executable producer, published fresh real Binance `TradeEvent` records, consumed them with a fresh latest-offset consumer group, and verified clean producer shutdown.
 - Controlled local two-session reconnect smoke-check has published trades at Kafka offsets `0` and `1`, observed the second connection after `5.005s`, logged recovery after successful publication, handled SIGTERM with final flush `remaining=0`, exited `0`, and opened no third session.
+- Controlled local-Kafka delivery-result smoke-check has returned successfully from the default publisher path after callback success and read back the exact published key/value with one new record.
 - Dedicated Binance -> Kafka -> Spark -> Iceberg smoke-checks have verified Bronze writes, S3A checkpoint progress, checkpoint recovery, and clean application-level Spark SIGINT/SIGTERM shutdown.
 
 ## Planned Target Architecture
@@ -132,7 +143,7 @@ Planned but not implemented:
 - Shutdown-stage timing.
 - Per-message flush timeout, per-message flush removal, and throughput optimization.
 - Second-interrupt escalation behavior and bounded escalation policy.
-- Delivery acknowledgement handling.
+- Broader delivery acknowledgement policy beyond the per-message callback result.
 - Producer container execution.
 - Delivery or undelivered-message logging and metrics.
 - ClickHouse aggregate loading.

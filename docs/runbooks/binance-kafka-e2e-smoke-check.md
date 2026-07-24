@@ -216,7 +216,9 @@ git status --short
 - Second-`SIGINT` or escalation behavior is not implemented or tested.
 - Final application-level Kafka flush has a 5.0-second timeout and raises `KafkaFinalizationError` if messages remain queued.
 - Per-message Kafka flush still has no explicit timeout, and its return value remains ignored.
-- Delivery callbacks and undelivered-message logging or metrics do not exist.
+- The default `flush=True` publisher path observes a per-message Kafka delivery callback and raises `KafkaDeliveryError` for a reported failure or missing callback result. This runbook validates ordinary live Binance-to-Kafka ingestion; the dedicated real-Kafka callback evidence is recorded in [the Kafka smoke runbook](kafka-smoke-check.md).
+- Callback success is distinct from local queue acceptance, final-flush `remaining=0`, and end-to-end exactly-once delivery.
+- Per-message `flush()` remains synchronous with no explicit timeout, limits batching and throughput, and its return value is not a queue policy. `flush=False` is an unconfirmed compatibility path not used by production.
 - The long-running producer reconnects after classified WebSocket connection-establishment and receive transport failures with capped exponential backoff from 5 to 60 seconds.
 - Reconnect does not replay or backfill trades missed while disconnected, and it does not retry parser or Kafka publication failures.
 - Per-message flush remains enabled.

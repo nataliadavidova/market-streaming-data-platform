@@ -100,9 +100,10 @@ Current local service config:
 
 Latest repository state:
 
+- Delivery-result observation commit: `52124a8 Observe Kafka delivery results`.
 - Reconnect implementation commit: `89ec8dd Add Binance producer reconnect`.
-- Focused producer lifecycle tests: 44 passed (`test_binance_publisher.py` and `test_binance_producer.py`).
-- Full suite: 196 passed.
+- Focused publisher/producer tests: 39 passed across `test_producer_publisher.py`, `test_producer_confluent.py`, `test_binance_publisher.py`, and `test_producer_smoke_publish_one.py`.
+- Full suite: 201 passed.
 
 Verified runtime evidence:
 
@@ -112,6 +113,7 @@ Verified runtime evidence:
 - Spark application-level SIGINT and SIGTERM, and producer SIGINT and SIGTERM, completed cleanly in the tested scenarios.
 - Producer SIGTERM observability showed three dedicated-topic records, return code `0`, final flush `remaining=0`, required INFO markers in order, observed shutdown duration `3.615s` with WebSocket context exit about `2.002s`, no forced cleanup, and no orphan process.
 - A controlled local two-session reconnect smoke published trade `990000000001` at Kafka offset `0`, observed a normal close, accepted session 2 after `5.005s`, published trade `990000000002` at offset `1`, logged recovery, remained alive, then handled SIGTERM with final flush `remaining=0`, exit code `0`, and no third session.
+- A real local-Kafka delivery-result smoke used the production publisher and adapter; `publish_message(..., flush=True)` returned after callback success, and the exact key/value was read back with the dedicated topic end offset advancing by one.
 
 These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, replay/backfill, arbitrary-crash, Kubernetes, or throughput guarantees.
 
@@ -163,9 +165,12 @@ Known limitations and backlog:
 
 - The reconnect loop retries only classified WebSocket connection-establishment and receive transport failures; parser, configuration, programming, and Kafka publication failures remain fatal.
 - Reconnect does not replay or backfill trades missed while the Binance connection is unavailable.
-- Delivery callbacks and explicit delivery acknowledgement observability are not implemented.
+- Default-path per-message delivery callback observation is implemented; callback failure or a missing callback result raises `KafkaDeliveryError`.
+- Broader delivery acknowledgement policy, undelivered-message logging, delivery metrics, and monitoring are not implemented.
 - Kafka idempotent producer mode is not enabled.
-- Per-message Kafka flush remains enabled; throughput benchmarking and optimization are pending.
+- Per-message Kafka flush remains synchronous with no explicit timeout; batching and throughput optimization are pending, and the flush return value is not a queue policy.
+- `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.
+- Polling, backpressure, replay, backfill, and deduplication remain future work.
 - There is no general end-to-end exactly-once or business-key deduplication guarantee.
 - SIGKILL and arbitrary crash-timing safety are not proven.
 - Kubernetes deployment/termination, ClickHouse serving, dashboard, and network-partition recovery remain future work.
@@ -174,12 +179,12 @@ Other Markdown status:
 
 - `README.md` records the current verified milestone and operational boundaries.
 - `docs/architecture.md` and `docs/roadmap.md` retain the broader target architecture and sequencing.
-- Existing runbooks under `docs/runbooks/` include historical procedures and may contain pre-milestone wording; they were intentionally not changed in this documentation slice.
+- Existing runbooks under `docs/runbooks/` contain operational procedures and historical evidence; update current capability statements without rewriting historical results.
 
 Next stage:
 
 - This documentation milestone is the current slice.
-- Reconnect is complete in the tested scope. Next, make a read-only decision between delivery observability/callbacks, producer throughput/per-message flush, and monitoring; keep these reliability areas separate.
+- Reconnect and default-path delivery-result observation are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
 ## Python environment
@@ -236,10 +241,14 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
+Reconnect and default-path delivery-result observation are implemented and tested. Perform a read-only decision between producer throughput/per-message flush and monitoring. Keep these reliability areas separate; do not implement them together.
+
+## Historical pre-52124a8 next step
+
 Reconnect is implemented and live-smoke tested. Perform a read-only decision between delivery observability/callbacks, producer throughput/per-message flush, and monitoring. Keep those reliability areas separate; do not implement them together.
 
 Current test suite:
 
-- 44 focused producer lifecycle tests pass.
-- 196 tests pass in the full suite.
+- 39 focused publisher/producer tests pass across the four producer/publisher test files.
+- 201 tests pass in the full suite.
 - Tests are not automatically rerun for documentation-only changes unless explicitly requested.

@@ -62,6 +62,8 @@ Implemented foundation:
 - Capped exponential reconnect backoff from 5 to 60 seconds, reset after the first successful Kafka publication in a recovered session.
 - Parser, configuration, programming, and Kafka publication failures remain fail-fast; cancellation is not reconnectable.
 - Kafka message preparation, `KafkaPublisher`, and the Confluent Kafka adapter.
+- Default `KafkaPublisher.publish_message(..., flush=True)` observes the per-message Kafka delivery callback and raises `KafkaDeliveryError` for a reported failure or a missing callback result.
+- Kafka delivery failures remain outside the Binance WebSocket reconnect path.
 - Executable Binance-to-Kafka producer: `python -m jobs.producer.binance_producer`.
 - CLI topic override with precedence `--topic -> KAFKA_TOPIC_TRADES_RAW -> config.kafka.raw_topic`.
 - Default Kafka bootstrap behavior: `KAFKA_BOOTSTRAP_SERVERS`, falling back to `localhost:9092`.
@@ -184,6 +186,13 @@ The following scenarios have been executed with dedicated runtime resources:
 
 These are controlled smoke results, not universal delivery or failure-safety guarantees.
 
+### Kafka delivery result observation
+
+- A real local-Kafka smoke used the production `KafkaPublisher` and `ConfluentKafkaProducerClient`.
+- `publish_message(..., flush=True)` returned only after the delivery callback reported success.
+- The exact published key/value was read back from Kafka and the dedicated topic end offset advanced by one.
+- This validates the current per-message callback boundary, not end-to-end exactly-once delivery.
+
 ## Local development
 
 Conda environment:
@@ -204,7 +213,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 196 tests passed. Focused producer lifecycle tests: 44 passed (`test_binance_publisher.py` and `test_binance_producer.py`).
+Latest verified suite: 201 tests passed. Focused publisher/producer tests: 39 passed across `test_producer_publisher.py`, `test_producer_confluent.py`, `test_binance_publisher.py`, and `test_producer_smoke_publish_one.py`.
 
 ## Manual smoke checks
 
@@ -219,12 +228,15 @@ The broader Binance -> Kafka -> Spark -> Iceberg and checkpoint-recovery results
 ## Limitations and backlog
 
 - Reconnect covers classified WebSocket connection/session transport failures only; it does not replay or backfill trades missed while disconnected.
-- WebSocket reconnect is not Kafka recovery, delivery acknowledgement, deduplication, or an end-to-end exactly-once guarantee.
-- Kafka delivery callbacks and explicit delivery acknowledgement observability are not implemented.
+- WebSocket reconnect is not Kafka recovery, delivery acknowledgement policy, deduplication, or an end-to-end exactly-once guarantee.
+- On the default `flush=True` path, callback success is distinct from local queue acceptance and final-flush `remaining=0`; it is not an end-to-end exactly-once guarantee.
+- `KafkaDeliveryError` makes callback-reported or missing per-message delivery results explicit, but broader acknowledgement policy and delivery metrics are not implemented.
 - Kafka idempotent producer mode is not enabled.
-- The producer still flushes after every message; throughput benchmarking and optimization are pending.
+- The producer still performs synchronous per-message `flush()` with no explicit timeout, which limits batching and throughput; its return value is not yet used as a queue policy.
+- `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.
 - There is no general end-to-end exactly-once guarantee.
 - Business-key deduplication is not implemented.
+- Monitoring, polling, batching, backpressure, replay, and backfill remain future work.
 - SIGKILL and arbitrary crash-timing safety are not proven.
 - Kubernetes deployment, readiness, and termination integration are not verified.
 - ClickHouse serving and dashboard layers remain future roadmap work.
