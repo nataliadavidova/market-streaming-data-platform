@@ -1,6 +1,7 @@
 """Test one-event Binance trade publishing composition without services."""
 
 import asyncio
+import logging
 
 import pytest
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
@@ -503,7 +504,7 @@ def closed_ok() -> ConnectionClosedOK:
     return ConnectionClosedOK(Close(1000, "normal close"), None)
 
 
-def test_run_binance_trade_publisher_retries_initial_connection_failure() -> None:
+def test_run_binance_trade_publisher_retries_initial_connection_failure(caplog) -> None:
     class StopRuntime(Exception):
         pass
 
@@ -528,6 +529,7 @@ def test_run_binance_trade_publisher_retries_initial_connection_failure() -> Non
     async def sleep(delay: float) -> None:
         delays.append(delay)
 
+    caplog.set_level(logging.INFO, logger="jobs.producer.binance_publisher")
     with pytest.raises(StopRuntime, match="stop"):
         asyncio.run(
             run_binance_trade_publisher(
@@ -535,6 +537,7 @@ def test_run_binance_trade_publisher_retries_initial_connection_failure() -> Non
                 RecordingPublisher(),
                 connect=connect,
                 sleep=sleep,
+                monotonic_clock=iter([100.0, 102.0]).__next__,
             )
         )
 
@@ -542,11 +545,21 @@ def test_run_binance_trade_publisher_retries_initial_connection_failure() -> Non
     assert second.enter_count == 1
     assert second.exit_count == 1
     assert delays == [5]
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+    ]
+    assert len(attempts) == 1
+    assert "attempt=1" in attempts[0]
+    assert "delay_seconds=5.0" in attempts[0]
+    assert "failure_type=OSError" in attempts[0]
 
 
 @pytest.mark.parametrize("close_error", [closed_error(), closed_ok()])
 def test_run_binance_trade_publisher_reconnects_after_receive_close(
     close_error: Exception,
+    caplog,
 ) -> None:
     class StopRuntime(Exception):
         pass
@@ -585,6 +598,7 @@ def test_run_binance_trade_publisher_reconnects_after_receive_close(
     async def sleep(delay: float) -> None:
         delays.append(delay)
 
+    caplog.set_level(logging.INFO, logger="jobs.producer.binance_publisher")
     with pytest.raises(StopRuntime, match="stop"):
         asyncio.run(
             run_binance_trade_publisher(
@@ -592,6 +606,7 @@ def test_run_binance_trade_publisher_reconnects_after_receive_close(
                 RecordingPublisher(),
                 connect=connect,
                 sleep=sleep,
+                monotonic_clock=iter([10.0, 12.5]).__next__,
             )
         )
 
@@ -599,9 +614,28 @@ def test_run_binance_trade_publisher_reconnects_after_receive_close(
     assert first.exit_count == 1
     assert second.exit_count == 1
     assert delays == [5]
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+    ]
+    recoveries = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_RECOVERED")
+    ]
+    assert len(attempts) == 1
+    assert attempts[0].startswith(
+        "BINANCE_RECONNECT_ATTEMPT attempt=1 delay_seconds=5.0 "
+        f"failure_type={type(close_error).__name__}:"
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].startswith("BINANCE_RECONNECT_RECOVERED")
+    assert "attempt=1" in recoveries[0]
+    assert "recovery_after_seconds=2.500" in recoveries[0]
 
 
-def test_run_binance_trade_publisher_backoff_reaches_configured_cap() -> None:
+def test_run_binance_trade_publisher_backoff_reaches_configured_cap(caplog) -> None:
     class StopReconnect(Exception):
         pass
 
@@ -617,6 +651,7 @@ def test_run_binance_trade_publisher_backoff_reaches_configured_cap() -> None:
         if len(delays) == 5:
             raise StopReconnect("stop retry test")
 
+    caplog.set_level(logging.WARNING, logger="jobs.producer.binance_publisher")
     with pytest.raises(StopReconnect, match="stop retry test"):
         asyncio.run(
             run_binance_trade_publisher(
@@ -629,9 +664,94 @@ def test_run_binance_trade_publisher_backoff_reaches_configured_cap() -> None:
 
     assert delays == [5, 10, 20, 40, 60]
     assert all(context.exit_count == 1 for context in contexts)
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+    ]
+    assert [message.split(" ")[1] for message in attempts] == [
+        "attempt=1",
+        "attempt=2",
+        "attempt=3",
+        "attempt=4",
+        "attempt=5",
+    ]
+    assert [message.split(" ")[2] for message in attempts] == [
+        "delay_seconds=5.0",
+        "delay_seconds=10.0",
+        "delay_seconds=20.0",
+        "delay_seconds=40.0",
+        "delay_seconds=60.0",
+    ]
+    assert all("failure_type=ConnectionClosedError" in message for message in attempts)
 
 
-def test_run_binance_trade_publisher_backoff_resets_after_first_successful_publish() -> None:
+def test_run_binance_trade_publisher_logs_attempts_and_duration_from_first_failure(
+    caplog,
+) -> None:
+    class StopRuntime(Exception):
+        pass
+
+    event_message = combined_trade_message(
+        symbol="BTCUSDT",
+        trade_id=12345,
+        price="68250.12",
+        quantity="0.015",
+        event_time_ms=1735689600123,
+    )
+    contexts = [
+        FakeWebSocketContext(FakeWebSocket([], error=closed_error())),
+        FakeWebSocketContext(FakeWebSocket([], error=closed_error())),
+        FakeWebSocketContext(FakeWebSocket([event_message], error=StopRuntime("stop"))),
+    ]
+    connect = SequenceWebSocketConnect(contexts)
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monotonic_values = iter([100.0, 112.5])
+    caplog.set_level(logging.INFO, logger="jobs.producer.binance_publisher")
+    with pytest.raises(StopRuntime, match="stop"):
+        asyncio.run(
+            run_binance_trade_publisher(
+                valid_producer_config(["BTCUSDT"]),
+                RecordingPublisher(),
+                connect=connect,
+                sleep=sleep,
+                monotonic_clock=monotonic_values.__next__,
+            )
+        )
+
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+    ]
+    recoveries = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_RECOVERED")
+    ]
+    assert ["attempt=1", "attempt=2"] == [
+        message.split(" ")[1] for message in attempts
+    ]
+    assert ["delay_seconds=5.0", "delay_seconds=10.0"] == [
+        message.split(" ")[2] for message in attempts
+    ]
+    assert all("failure_type=ConnectionClosedError" in message for message in attempts)
+    assert len(recoveries) == 1
+    assert recoveries[0].startswith("BINANCE_RECONNECT_RECOVERED")
+    assert "attempt=2" in recoveries[0]
+    assert "recovery_after_seconds=12.500" in recoveries[0]
+    assert event_message not in caplog.text
+    assert "binance:BTCUSDT" not in caplog.text
+    assert delays == [5, 10]
+
+
+def test_run_binance_trade_publisher_backoff_resets_after_first_successful_publish(
+    caplog,
+) -> None:
     class StopReconnect(Exception):
         pass
 
@@ -656,6 +776,7 @@ def test_run_binance_trade_publisher_backoff_resets_after_first_successful_publi
         if len(delays) == 4:
             raise StopReconnect("stop retry test")
 
+    caplog.set_level(logging.INFO, logger="jobs.producer.binance_publisher")
     with pytest.raises(StopReconnect, match="stop retry test"):
         asyncio.run(
             run_binance_trade_publisher(
@@ -663,13 +784,36 @@ def test_run_binance_trade_publisher_backoff_resets_after_first_successful_publi
                 RecordingPublisher(),
                 connect=connect,
                 sleep=sleep,
+                monotonic_clock=iter([100.0, 112.0, 120.0]).__next__,
             )
         )
 
     assert delays == [5, 10, 5, 10]
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+    ]
+    recoveries = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_RECOVERED")
+    ]
+    assert [message.split(" ")[1] for message in attempts] == [
+        "attempt=1",
+        "attempt=2",
+        "attempt=1",
+        "attempt=2",
+    ]
+    assert len(recoveries) == 1
+    assert recoveries[0].startswith("BINANCE_RECONNECT_RECOVERED")
+    assert "attempt=2" in recoveries[0]
+    assert "recovery_after_seconds=12.000" in recoveries[0]
 
 
-def test_run_binance_trade_publisher_immediate_close_does_not_reset_backoff() -> None:
+def test_run_binance_trade_publisher_immediate_close_does_not_reset_backoff(
+    caplog,
+) -> None:
     class StopReconnect(Exception):
         pass
 
@@ -685,6 +829,7 @@ def test_run_binance_trade_publisher_immediate_close_does_not_reset_backoff() ->
         if len(delays) == 3:
             raise StopReconnect("stop retry test")
 
+    caplog.set_level(logging.WARNING, logger="jobs.producer.binance_publisher")
     with pytest.raises(StopReconnect, match="stop retry test"):
         asyncio.run(
             run_binance_trade_publisher(
@@ -696,9 +841,25 @@ def test_run_binance_trade_publisher_immediate_close_does_not_reset_backoff() ->
         )
 
     assert delays == [5, 10, 20]
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+    ]
+    assert [message.split(" ")[1] for message in attempts] == [
+        "attempt=1",
+        "attempt=2",
+        "attempt=3",
+    ]
+    assert not any(
+        record.getMessage().startswith("BINANCE_RECONNECT_RECOVERED")
+        for record in caplog.records
+    )
 
 
-def test_run_binance_trade_publisher_cancellation_during_backoff_propagates() -> None:
+def test_run_binance_trade_publisher_cancellation_during_backoff_propagates(
+    caplog,
+) -> None:
     started = asyncio.Event()
     context = FakeWebSocketContext(FakeWebSocket([], error=closed_error()))
     connect = SequenceWebSocketConnect([context])
@@ -722,10 +883,15 @@ def test_run_binance_trade_publisher_cancellation_during_backoff_propagates() ->
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    caplog.set_level(logging.INFO, logger="jobs.producer.binance_publisher")
     asyncio.run(run_and_cancel())
 
     assert len(connect.urls) == 1
     assert context.exit_count == 1
+    assert not any(
+        record.getMessage().startswith("BINANCE_RECONNECT_RECOVERED")
+        for record in caplog.records
+    )
 
 
 def test_run_binance_trade_publisher_does_not_retry_malformed_message() -> None:
@@ -745,7 +911,9 @@ def test_run_binance_trade_publisher_does_not_retry_malformed_message() -> None:
     assert context.exit_count == 1
 
 
-def test_run_binance_trade_publisher_does_not_retry_kafka_publisher_error() -> None:
+def test_run_binance_trade_publisher_does_not_retry_kafka_publisher_error(
+    caplog,
+) -> None:
     event_message = combined_trade_message(
         symbol="BTCUSDT",
         trade_id=12345,
@@ -769,6 +937,7 @@ def test_run_binance_trade_publisher_does_not_retry_kafka_publisher_error() -> N
     connect = SequenceWebSocketConnect([context])
     publisher = KafkaPublisher(topic="market.trades.raw", client=OSErrorKafkaClient())
 
+    caplog.set_level(logging.INFO, logger="jobs.producer.binance_publisher")
     with pytest.raises(OSError, match="Kafka send failed"):
         asyncio.run(
             run_binance_trade_publisher(
@@ -780,6 +949,11 @@ def test_run_binance_trade_publisher_does_not_retry_kafka_publisher_error() -> N
 
     assert len(connect.urls) == 1
     assert context.exit_count == 1
+    assert not any(
+        record.getMessage().startswith("BINANCE_RECONNECT_ATTEMPT")
+        or record.getMessage().startswith("BINANCE_RECONNECT_RECOVERED")
+        for record in caplog.records
+    )
 
 
 def test_run_binance_trade_publisher_closes_context_before_next_connection() -> None:

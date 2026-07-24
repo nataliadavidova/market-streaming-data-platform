@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from time import monotonic
 
 from jobs.producer.binance import (
     BinanceTradeEventReceiver,
@@ -64,22 +65,31 @@ async def run_binance_trade_publisher(
     connect: WebSocketConnect | None = None,
     clock: Clock = current_time_ms,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    monotonic_clock: Callable[[], float] = monotonic,
 ) -> None:
     initial_delay = config.producer.reconnect_delay_seconds
     max_delay = config.producer.max_reconnect_delay_seconds
     reconnect_delay = initial_delay
     awaiting_recovery = False
+    reconnect_attempt = 0
+    disconnected_since: float | None = None
 
     while True:
         session_entered = False
 
         def on_success(_event: TradeEvent) -> None:
-            nonlocal awaiting_recovery, reconnect_delay
+            nonlocal awaiting_recovery, disconnected_since
+            nonlocal reconnect_attempt, reconnect_delay
             if awaiting_recovery:
                 logger.info(
-                    "Binance WebSocket session recovered after first successful publication"
+                    "BINANCE_RECONNECT_RECOVERED attempt=%d "
+                    "recovery_after_seconds=%.3f",
+                    reconnect_attempt,
+                    monotonic_clock() - disconnected_since,
                 )
                 awaiting_recovery = False
+                disconnected_since = None
+                reconnect_attempt = 0
                 reconnect_delay = initial_delay
 
         try:
@@ -103,10 +113,18 @@ async def run_binance_trade_publisher(
         else:
             raise AssertionError("Binance trade publisher session exited unexpectedly")
 
+        if disconnected_since is None:
+            disconnected_since = monotonic_clock()
+            reconnect_attempt = 1
+        else:
+            reconnect_attempt += 1
         awaiting_recovery = True
         logger.warning(
-            "Binance WebSocket transport failure; reconnecting in %.1f seconds: %s",
+            "BINANCE_RECONNECT_ATTEMPT attempt=%d delay_seconds=%.1f "
+            "failure_type=%s: %s",
+            reconnect_attempt,
             reconnect_delay,
+            type(failure).__name__,
             failure,
         )
         await sleep(reconnect_delay)
