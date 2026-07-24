@@ -6,7 +6,7 @@ ICEBERG_REST_CONFIG_URL := http://localhost:8181/v1/config
 ICEBERG_READY_MAX_ATTEMPTS := 60
 SPARK_ICEBERG_TRADE_PACKAGES := org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.2,org.apache.hadoop:hadoop-aws:3.4.2,org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.11.0,org.apache.iceberg:iceberg-aws-bundle:1.11.0
 
-.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps iceberg-trade-stream
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps iceberg-trade-stream iceberg-inspect
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -73,3 +73,8 @@ iceberg-trade-stream:
 	PYTHONPATH=. spark-submit \
 		--packages "$(SPARK_ICEBERG_TRADE_PACKAGES)" \
 		jobs/streaming/iceberg_trade_streaming_job.py
+
+iceberg-inspect:
+	PYTHONPATH=. spark-submit \
+		--packages "$(SPARK_ICEBERG_TRADE_PACKAGES)" \
+		jobs/streaming/iceberg_inspection.py
