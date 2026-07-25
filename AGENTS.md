@@ -93,6 +93,8 @@ Current architecture boundaries:
 
 The read-only Iceberg inspection workflow is implemented through `make iceberg-inspect` and `jobs.streaming.iceberg_inspection`. It reports existing Bronze table identity, schema, row count, snapshots, history, data files, and partition metadata without creating or mutating tables, starting a streaming query, or reading checkpoints.
 
+The non-persisted Bronze quality classifier is implemented in `jobs.streaming.bronze_quality`. It preserves each raw Kafka-like row and its audit fields, safely classifies JSON, identity, decimal, timestamp, and Kafka-coordinate issues with `is_valid` and ordered `validation_errors`, but it is not connected to the Iceberg sink or production streaming path.
+
 Current local service config:
 
 - `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
@@ -105,10 +107,13 @@ Latest repository state:
 - Reconnect lifecycle observability commit: `515b1e1 Add reconnect lifecycle observability`.
 - Iceberg inspection implementation commit: `2d6ec09 Add Iceberg inspection workflow`.
 - Delivery-result observation commit: `52124a8 Observe Kafka delivery results`.
+- Bronze quality classification commit: `fba550e Add Bronze quality classification`.
 - Reconnect implementation commit: `89ec8dd Add Binance producer reconnect`.
 - Focused reconnect lifecycle tests: 19 passed in `test_binance_publisher.py`.
 - Focused Iceberg inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`.
-- Full suite: 222 passed.
+- Focused Bronze quality tests: 19 passed in `tests/unit/test_streaming_bronze_quality.py`.
+- Existing trade parser tests: 2 passed in `tests/unit/test_streaming_trades.py`.
+- Full suite: 241 passed.
 
 Verified runtime evidence:
 
@@ -121,6 +126,7 @@ Verified runtime evidence:
 - The reconnect observability smoke emitted `BINANCE_RECONNECT_ATTEMPT attempt=1 delay_seconds=5.0 failure_type=ConnectionClosedOK`, measured `5.004438s` from session close to session 2 acceptance, emitted `BINANCE_RECONNECT_RECOVERED attempt=1 recovery_after_seconds=5.024`, and completed SIGTERM with exit code `0`, final flush `remaining=0`, and no third session. These logs are process-local evidence, not durable monitoring.
 - A real local-Kafka delivery-result smoke used the production publisher and adapter; `publish_message(..., flush=True)` returned after callback success, and the exact key/value was read back with the dedicated topic end offset advancing by one.
 - A controlled Iceberg inspection smoke passed against Spark 4.1.2, Iceberg 1.11.0, the Iceberg REST catalog, and MinIO. The existing Bronze table was inspected twice without a new snapshot or data file. Its unpartitioned `partitions` relation returned one aggregate statistics row without a `partition` column, which the inspector reports explicitly.
+- Static Spark quality validation passed with `spark.sql.ansi.enabled=true`: valid, malformed-JSON, and invalid-decimal rows were all classified in one DataFrame execution without changing the Iceberg schema or write path.
 
 These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, replay/backfill, arbitrary-crash, Kubernetes, or throughput guarantees.
 
@@ -165,6 +171,7 @@ Producer shutdown contract:
 Spark/Iceberg contract:
 
 - `jobs/streaming/iceberg_trade_streaming_job.py` reads Kafka, parses the typed Bronze contract, writes through the native Iceberg streaming sink, and uses a query-specific S3A checkpoint.
+- `classify_raw_trade_kafka_messages(kafka_df)` is a separate non-persisted transformation; it is not called by the streaming job, Iceberg sink, checkpoint path, or any writer.
 - Iceberg uses the REST catalog plus S3FileIO; MinIO stores data and metadata objects locally.
 - Graceful Spark shutdown uses a shutdown event, timed `awaitTermination` polling, `query.stop()` before `spark.stop()`, and handler restoration after cleanup.
 - `jobs/streaming/iceberg_inspection.py` provides a bounded, read-only table inspection CLI. It validates safe dotted identifiers, uses the existing Iceberg-enabled Spark configuration, and stops its owned Spark session while preserving inspection errors when cleanup also fails.
@@ -193,7 +200,7 @@ Other Markdown status:
 
 Next stage:
 
-- The completed read-only Iceberg inspection workflow is the current storage milestone. The next storage slice is a narrow Bronze data-quality contract; keep its validity rules and deterministic handling separate from Silver design and maintenance work.
+- The non-persisted Bronze quality classification slice is complete. The next storage slice is persisted Bronze quality contract design: decide how `is_valid` and `validation_errors` should be stored and integrated without silently discarding raw evidence. Keep that work separate from Silver design and maintenance.
 - Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and broader monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
@@ -251,7 +258,7 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-Reconnect, default-path delivery-result observation, reconnect lifecycle logging, and read-only Iceberg inspection are implemented and tested. The next storage slice is a narrow Bronze data-quality contract. Keep producer throughput/per-message flush and broader monitoring separate from that storage work.
+Reconnect, default-path delivery-result observation, reconnect lifecycle logging, read-only Iceberg inspection, and non-persisted Bronze quality classification are implemented and tested. The next storage slice is persisted Bronze quality contract design. Keep producer throughput/per-message flush and broader monitoring separate from that storage work.
 
 ## Historical pre-52124a8 next step
 
@@ -259,7 +266,9 @@ Reconnect is implemented and live-smoke tested. Perform a read-only decision bet
 
 Current test suite:
 
+- 19 focused Bronze quality tests pass in `tests/unit/test_streaming_bronze_quality.py`.
+- 2 existing trade parser tests pass in `tests/unit/test_streaming_trades.py`.
 - 20 focused Iceberg inspection tests pass in `tests/unit/test_streaming_iceberg_inspection.py`.
 - 19 focused reconnect lifecycle tests pass in `tests/unit/test_binance_publisher.py`.
-- 222 tests pass in the full suite.
+- 241 tests pass in the full suite.
 - Tests are not automatically rerun for documentation-only changes unless explicitly requested.

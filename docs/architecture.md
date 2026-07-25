@@ -35,7 +35,8 @@ ClickHouse and dashboard serving are not part of the current implementation.
 - Market API/WebSocket: source of live market trade messages.
 - Python producer: reads market trade messages, validates/parses them into internal contracts, and publishes raw events to Kafka.
 - Kafka: durable streaming buffer for raw market events.
-- Spark Structured Streaming: reads Kafka, parses, validates, and normalizes the typed Bronze contract.
+- Spark Structured Streaming: reads Kafka, parses, validates, and normalizes the typed Bronze contract for the existing live write path.
+- Bronze quality classifier: independently evaluates a raw Kafka-like DataFrame without filtering, persisting, or starting a query.
 - Iceberg on S3-compatible storage: durable Bronze table storage with snapshots, manifests, and metadata.
 - REST catalog + S3FileIO: resolves Iceberg metadata and reads/writes table objects in S3-compatible storage.
 - Hadoop S3A: stores Spark checkpoint objects independently from Iceberg table metadata.
@@ -94,6 +95,18 @@ describes the resulting table state. Table data is the actual trade rows in Parq
 The inspector uses bounded, read-only queries for table identity, schema, row count, snapshots, history, files, and partitions. The current Bronze table is unpartitioned. In the tested Spark 4.1.2 / Iceberg 1.11.0 runtime, `<table>.partitions` returned one aggregate statistics row without a `partition` column, so the inspector reports `unpartitioned table (aggregate table statistics)` and preserves the aggregate fields. Metadata relation schemas can vary across Iceberg versions; this behavior is not a universal metadata contract.
 
 The inspector owns and stops the Spark session it creates. Inspection errors retain their original Spark/catalog cause, and a cleanup failure is recorded without replacing an earlier inspection failure. The workflow does not create tables, execute writes or maintenance procedures, start streaming, or inspect checkpoints.
+
+## Bronze quality classification boundary
+
+The producer validates and parses normal Binance events before publishing them to Kafka, but Kafka may also contain records from another producer or a replay path. The separate Spark classifier evaluates those raw records independently:
+
+`raw Kafka-like DataFrame -> Bronze quality classifier -> Bronze-shaped DataFrame + is_valid + validation_errors`
+
+It preserves one output row for every input row, including `raw_json`, `kafka_key`, `kafka_topic`, `kafka_partition`, `kafka_offset`, and `kafka_timestamp` audit evidence where available. Its stable labels cover null or malformed raw JSON, missing identity or transport coordinates, invalid or non-positive decimals, and missing or non-positive timestamps. Valid rows receive an empty error array; invalid rows remain classified data rather than being filtered.
+
+Decimal fields use Spark's `try_cast` to `DECIMAL(38,18)`. Under the effective ANSI setting, an invalid decimal becomes null and receives `INVALID_PRICE` or `INVALID_QUANTITY`; global `spark.sql.ansi.enabled` is not changed. This is distinct from an ordinary ANSI cast that may fail the job.
+
+This classifier exists and is tested, but it is not connected to `iceberg_trade_streaming_job.py`, `start_bronze_trade_stream(...)`, the current Bronze Iceberg schema, or the checkpointed write path. Persisting these labels requires a separate quality-contract design covering schema evolution or an isolated storage strategy and a controlled runtime validation. It does not provide deduplication, monitoring, quarantine, Silver transformations, or exactly-once behavior.
 
 Implemented executable producer flow:
 

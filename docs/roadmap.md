@@ -39,10 +39,12 @@ Completed:
 - Successful bounded live Binance-to-Kafka smoke-check through the executable producer and Kafka consumer.
 - Successful bounded live graceful-finalization smoke-check confirming fresh Binance-to-Kafka delivery, producer exit status `0`, and no cancellation or `KeyboardInterrupt` traceback.
 - Spark Kafka source and typed Bronze parser.
+- Explicit non-persisted Bronze quality classification (`fba550e Add Bronze quality classification`): every input row is preserved, raw and Kafka audit evidence remains available, malformed JSON is classified, invalid decimals are safely handled with `try_cast`, and ordered `validation_errors` plus `is_valid` are produced without changing the write path.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific Hadoop S3A checkpoint configuration.
 - Read-only Iceberg inspection workflow (`2d6ec09 Add Iceberg inspection workflow`) covering table identity, schema, row count, snapshots, history, data files, and partition metadata through `make iceberg-inspect`.
-- Controlled Spark 4.1.2 / Iceberg 1.11.0 / Iceberg REST / MinIO inspection smoke, with 20 focused inspection tests and 222 tests in the full suite.
+- Controlled Spark 4.1.2 / Iceberg 1.11.0 / Iceberg REST / MinIO inspection smoke, with 20 focused inspection tests and 222 tests in the full suite at that milestone.
+- Bronze quality classification evidence: 19 focused quality tests, 2 existing trade parser tests, 241 tests in the current full suite, and static Spark validation with `spark.sql.ansi.enabled=true`.
 - Dedicated Kafka → Spark → Iceberg smoke with checkpoint progress and recovery verification.
 - Graceful Spark SIGINT and SIGTERM shutdown with query-before-Spark cleanup order.
 - Graceful producer SIGINT and SIGTERM shutdown with bounded final Kafka flush.
@@ -64,7 +66,7 @@ In progress:
 
 Planned:
 
-- Bronze data-quality contract with explicit validity rules and deterministic handling.
+- Persist Bronze quality labels safely: design and implement the persisted Bronze quality contract, including schema evolution or an isolated-table strategy, streaming integration, and a controlled runtime smoke. The current classifier remains non-persisted.
 - Shutdown-latency investigation.
 - WebSocket close-timeout tuning or instrumentation.
 - Shutdown-stage timing.
