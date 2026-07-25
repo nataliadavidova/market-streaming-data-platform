@@ -12,7 +12,7 @@ The project remains in the Version 1 bootstrap phase, but the first live ingesti
 
 Current verified ingestion flow:
 
-`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> typed Bronze parser -> Iceberg Bronze table -> Parquet/metadata in MinIO`
+`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> canonical 15-column Iceberg Bronze table -> Parquet/metadata in MinIO`
 
 Spark processing progress is persisted separately:
 
@@ -35,8 +35,8 @@ ClickHouse and dashboard serving are not part of the current implementation.
 - Market API/WebSocket: source of live market trade messages.
 - Python producer: reads market trade messages, validates/parses them into internal contracts, and publishes raw events to Kafka.
 - Kafka: durable streaming buffer for raw market events.
-- Spark Structured Streaming: reads Kafka, parses, validates, and normalizes the typed Bronze contract for the existing live write path.
-- Bronze quality classifier: independently evaluates a raw Kafka-like DataFrame without filtering, persisting, or starting a query.
+- Spark Structured Streaming: reads Kafka, classifies each raw record, and appends the 15-column Bronze contract.
+- Bronze quality classifier: evaluates raw Kafka records without filtering and preserves raw/audit evidence alongside quality labels.
 - Iceberg on S3-compatible storage: durable Bronze table storage with snapshots, manifests, and metadata.
 - REST catalog + S3FileIO: resolves Iceberg metadata and reads/writes table objects in S3-compatible storage.
 - Hadoop S3A: stores Spark checkpoint objects independently from Iceberg table metadata.
@@ -76,8 +76,8 @@ Implemented:
 - The producer accepts `--topic` with precedence `--topic -> KAFKA_TOPIC_TRADES_RAW -> config.kafka.raw_topic`; the override is applied through an immutable config copy.
 - Local Kafka runs through Docker Compose.
 - Makefile commands support local Kafka up/down, topic creation, one synthetic producer smoke publish, and bounded consume-one checks.
-- `make iceberg-trade-stream` runs the Spark Kafka source, typed Bronze parser, native Iceberg streaming sink, and query-specific S3A checkpoint.
-- A dedicated Kafka topic, Iceberg table, and checkpoint are required for runtime smoke tests; production Bronze is not a smoke target.
+- `make iceberg-trade-stream` requires the exact canonical quality schema, then runs the Kafka source, Bronze quality classifier, native Iceberg sink, and versioned S3A checkpoint.
+- Runtime smokes normally use dedicated resources. Canonical migration or cutover validation may target the canonical development table only when the task explicitly requires it and records table/checkpoint safety evidence.
 - GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
 
 ## Iceberg Inspection Boundary
@@ -106,15 +106,15 @@ It preserves one output row for every input row, including `raw_json`, `kafka_ke
 
 Decimal fields use Spark's `try_cast` to `DECIMAL(38,18)`. Under the effective ANSI setting, an invalid decimal becomes null and receives `INVALID_PRICE` or `INVALID_QUANTITY`; global `spark.sql.ansi.enabled` is not changed. This is distinct from an ordinary ANSI cast that may fail the job.
 
-This classifier exists and is tested, but it is not connected to `iceberg_trade_streaming_job.py`, `start_bronze_trade_stream(...)`, or the checkpointed write path. The migrated canonical schema now has fields for its labels, but live classification remains separate work. It does not provide deduplication, monitoring, quarantine, Silver transformations, or exactly-once behavior.
+The classifier now feeds `iceberg_trade_streaming_job.py` and the existing generic Iceberg sink. Its exact 15-column output matches the canonical quality contract. It still does not provide deduplication, monitoring, quarantine, Silver transformations, or exactly-once behavior.
 
 ## Isolated persisted Bronze quality-contract boundary
 
-The persisted contract is deliberately separate from the current live path:
+The earlier isolated persisted-contract path remains separate from the current live path:
 
 Current live path:
 
-`Kafka -> existing 13-column parser -> market_catalog.market.bronze_trades -> current checkpoint`
+`Kafka -> Bronze quality classifier -> market_catalog.market.bronze_trades -> quality-v1 checkpoint`
 
 Non-persisted classifier path:
 
@@ -128,7 +128,7 @@ The isolated table contains the existing 13 Bronze fields plus `is_valid BOOLEAN
 
 The controlled Spark 4.1.2 / Iceberg 1.11.0 / REST catalog / MinIO smoke persisted three rows and three data files in one snapshot: one valid row, one `MALFORMED_JSON` row, and one `INVALID_PRICE` row. The canonical table remained 13 columns with row count 1, one snapshot, latest snapshot `8232280423536300118`, and one data file before and after the smoke. The isolated catalog entry was dropped afterward; physical object purge was not separately proven.
 
-This proves persistence of the 15-column contract on an isolated table, not live streaming cutover or compatibility with the existing 13-column checkpoint.
+This proved persistence of the 15-column contract before the separate canonical migration and live cutover. The isolated table is not a second production path.
 
 ## Canonical Bronze schema migration boundary
 
@@ -136,15 +136,10 @@ The previous live path was:
 
 `Kafka -> parse_raw_trade_kafka_messages(...) -> 13-column DataFrame -> market_catalog.market.bronze_trades -> old checkpoint`
 
-The canonical development table is now persisted with 15 columns:
+The canonical development table and current writer now share the persisted
+15-column quality contract:
 
-`market_catalog.market.bronze_trades -> 15-column Iceberg schema`
-
-This creates an intentional temporary mismatch:
-
-`table: 15 columns`
-
-`live writer: still 13 columns`
+`market_catalog.market.bronze_trades -> 15-column Iceberg schema and live output`
 
 The explicit migration command used the additive SQL:
 
@@ -158,11 +153,13 @@ ADD COLUMNS (
 
 It changes Iceberg table metadata without rewriting the existing data file. Existing rows receive nullable `is_valid` and `validation_errors`; in the controlled smoke, `NULL / NULL` means not evaluated under the quality contract. No new data snapshot was observed, and row count, history, latest snapshot, data-file path/count, and location stayed unchanged. The migration is idempotent: the first run returned `MIGRATED`, and the second returned `ALREADY_MIGRATED` without another ALTER.
 
-The planned final live path is:
+The current live path is:
 
-`Kafka -> classify_raw_trade_kafka_messages(...) -> 15-column DataFrame -> market_catalog.market.bronze_trades -> new versioned checkpoint`
+`Kafka -> classify_raw_trade_kafka_messages(...) -> 15-column DataFrame -> market_catalog.market.bronze_trades -> s3a://market-lake/checkpoints/market/bronze-trades-quality-v1`
 
-The old checkpoint was not reused, migrated, or deleted. Iceberg schema evolution and Spark checkpoint state are independent contracts. Restart compatibility, old-writer compatibility with the migrated table, classifier integration, explicit first-start `startingOffsets=latest`, and controlled start/restart validation remain untested future work. **Do not start the current legacy 13-column streaming job while this temporary mismatch exists.**
+Before creating the Kafka stream, the job validates the canonical identifier and requires `QUALITY_15_COLUMN`; legacy or incompatible schemas fail without automatic DDL. The first start explicitly requests Kafka `startingOffsets=latest`. Once checkpoint progress exists, restart resumes from that checkpoint. The query name is `market-iceberg-bronze-trades-quality-v1`.
+
+The old checkpoint was not reused, migrated, or deleted and is explicitly rejected by the quality job. Iceberg schema evolution and Spark checkpoint state remain independent contracts. The controlled restart observed offsets `0..4` appended once, but it does not establish universal exactly-once behavior or compatibility with the legacy writer.
 
 Implemented executable producer flow:
 

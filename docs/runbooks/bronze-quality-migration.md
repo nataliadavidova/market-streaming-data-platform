@@ -1,14 +1,14 @@
-# Canonical Bronze quality migration
+# Canonical Bronze quality migration and live cutover
 
 ## Purpose
 
-`make iceberg-migrate-bronze-quality` performs one explicit, idempotent Iceberg schema migration for the canonical development table:
+This runbook covers the explicit Iceberg schema migration and the subsequent quality-v1 streaming cutover for:
 
 ```text
 market_catalog.market.bronze_trades
 ```
 
-It adds the two nullable quality fields required by the persisted Bronze contract. It does not connect the classifier to streaming and does not write rows.
+The migration adds the two nullable quality fields. The live job then classifies raw Kafka rows and persists the exact 15-column contract through a new checkpoint and query identity.
 
 ## Preconditions
 
@@ -21,20 +21,45 @@ Before running the migration:
 - Confirm the canonical table exists and inspect its current schema and metadata.
 - Understand that this command mutates canonical table metadata in the development environment.
 
-Do not use this command as a substitute for a live-path cutover. The current streaming job still produces the legacy 13-column DataFrame.
+Keep the old writer stopped throughout migration and cutover. Never run the quality job against the legacy checkpoint.
 
-## Supported command sequence
+## Cutover command sequence
 
 Run from the repository root:
 
 ```bash
+make kafka-up
+make kafka-create-topic
 make iceberg-up
 make iceberg-migrate-bronze-quality
 make iceberg-inspect
-make iceberg-down
 ```
 
-The migration target does not start or stop infrastructure automatically. It does not start Kafka, the producer, or a streaming query.
+The migration target does not start or stop infrastructure automatically. It does not start Kafka, the producer, or a streaming query. Keep the storage services running for the live verification below.
+
+## Live cutover and restart
+
+After `make iceberg-inspect` confirms the exact 15-column schema:
+
+1. Start `make iceberg-trade-stream`.
+2. Confirm the query is active before publishing records.
+3. Publish controlled records and verify their quality labels and Kafka coordinates in canonical Bronze.
+4. Stop the Spark job.
+5. Restart `make iceberg-trade-stream` with the same defaults.
+6. Publish new controlled records and verify that only the new Kafka identities are appended.
+7. Stop Spark.
+8. Run `make iceberg-down` and `make kafka-down`.
+
+The live job uses:
+
+```text
+table: market_catalog.market.bronze_trades
+checkpoint: s3a://market-lake/checkpoints/market/bronze-trades-quality-v1
+query name: market-iceberg-bronze-trades-quality-v1
+first-start startingOffsets: latest
+```
+
+`startingOffsets=latest` applies when the new checkpoint has no progress. Restarts resume from the saved quality-v1 checkpoint.
 
 ## State behavior
 
@@ -87,7 +112,7 @@ This means “not evaluated under the quality contract”; it does not mean inva
 
 ## Safety boundary
 
-This command:
+The migration command:
 
 - targets only `market_catalog.market.bronze_trades`;
 - performs schema inspection and additive `ALTER TABLE` only;
@@ -98,7 +123,16 @@ This command:
 - does not drop, recreate, overwrite, or truncate the table;
 - does not roll back automatically.
 
-**After the canonical table has 15 columns, do not start the current legacy 13-column streaming job.** The next integration slice must first connect `classify_raw_trade_kafka_messages(...)`, validate the 15-column table before stream start, and configure a new versioned checkpoint.
+The quality-v1 streaming job:
+
+- requires the exact `QUALITY_15_COLUMN` state before constructing the Kafka source;
+- does not run `ALTER TABLE`;
+- classifies every Kafka input row without filtering;
+- uses the existing append sink;
+- rejects the exact legacy checkpoint;
+- does not delete, copy, reset, or migrate any checkpoint.
+
+Do not run an older 13-column application version against the migrated table. Compatibility with the legacy writer is not established.
 
 ## Verification
 
@@ -108,7 +142,7 @@ Interpret the CLI output as follows:
 - `ALREADY_MIGRATED`: the exact 15-column schema was already present and no ALTER executed.
 - `INCOMPATIBLE`: the schema is not one of the supported states; no ALTER is attempted.
 
-Use `make iceberg-inspect` to verify the 15-column schema, unchanged row count, snapshots/history, data files, and location. This is table-state inspection, not continuous monitoring.
+Use `make iceberg-inspect` to verify the 15-column schema, row count, snapshots/history, data files, and location. For cutover verification, use narrowly scoped read-only queries for `is_valid`, `validation_errors`, `kafka_topic`, `kafka_partition`, and `kafka_offset`. This is table-state inspection, not continuous monitoring.
 
 ## Failure handling
 
@@ -150,18 +184,34 @@ location: unchanged
 historical quality fields: NULL / NULL
 ```
 
-The second run returned `ALREADY_MIGRATED` and executed no ALTER. These are controlled development-environment observations, not guarantees about future table state, exactly-once behavior, historical classification, or streaming restart compatibility.
+The second migration run returned `ALREADY_MIGRATED` and executed no ALTER.
 
-## Next step
-
-The next slice is canonical live quality integration:
+The subsequent controlled live smoke started from the one historical row:
 
 ```text
-replace the legacy parser with classify_raw_trade_kafka_messages(...)
-→ validate the 15-column table before stream start
-→ introduce a new versioned checkpoint and query name
-→ use explicit startingOffsets=latest for first start
-→ validate controlled initial start and restart
+first start:
+Kafka offsets: 0, 1, 2
+quality outcomes: 1 valid, 1 MALFORMED_JSON, 1 INVALID_PRICE
+row count: 1 -> 4
+snapshots/history: 1/1 -> 3/3
+data files: 1 -> 2
 ```
 
-The old checkpoint remains untouched and must not be reused for the migrated query.
+The job was stopped and restarted with the same quality-v1 checkpoint:
+
+```text
+restart:
+Kafka offsets: 3, 4
+quality outcomes: 1 valid, 1 INVALID_QUANTITY
+additional rows: 2
+final row count: 6
+snapshots/history: 4/4
+data files: 3
+schema: 15 columns
+```
+
+All observed identities used topic `market.trades.raw`, partition 0, offsets `0..4`. The first-run offsets were not appended again, and raw JSON plus Kafka audit fields remained available. This is controlled restart evidence, not a universal exactly-once, replay, deduplication, or crash-safety guarantee.
+
+Terminal interruption caused the `make` wrapper to return exit code 130. Spark separately logged successful query/context cleanup and process cleanup with exit code 0, and final `docker compose ps` was empty. Code 130 is not a successful application exit, but it was not a data-processing failure in this controlled run.
+
+The old checkpoint remains untouched and must not be reused for the quality-v1 query. No historical backfill, checkpoint deletion, replay control, deduplication, monitoring, Silver transformation, rejected-record table, or production deployment is included.

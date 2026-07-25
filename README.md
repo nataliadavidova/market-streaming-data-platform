@@ -8,7 +8,7 @@ The Version 1 target flow is:
 
 The implemented ingestion path is now:
 
-`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> typed Bronze parser -> Iceberg Bronze table -> Parquet/metadata in MinIO`
+`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> 15-column Iceberg Bronze table -> Parquet/metadata in MinIO`
 
 Spark Kafka progress is persisted separately through:
 
@@ -38,9 +38,9 @@ Current and planned technologies:
 - Local Kafka infrastructure: implemented and smoke-tested.
 - Spark Kafka source: implemented.
 - Spark typed Bronze parser: implemented.
-- Non-persisted Bronze quality classification: implemented and statically Spark-tested.
+- Bronze quality classification: implemented, statically Spark-tested, and connected to the canonical live stream.
 - Isolated persisted Bronze quality contract: implemented and controlled-smoke tested.
-- Canonical Bronze quality-schema migration: implemented and controlled-smoke tested; the development table now has 15 columns, while live-writer integration remains intentionally pending.
+- Canonical Bronze quality schema and live integration: implemented and controlled start/restart tested.
 - Iceberg REST catalog and S3FileIO configuration: implemented.
 - Iceberg Bronze table: implemented.
 - Native Iceberg streaming sink: implemented.
@@ -72,8 +72,8 @@ Implemented foundation:
 - Executable Binance-to-Kafka producer: `python -m jobs.producer.binance_producer`.
 - CLI topic override with precedence `--topic -> KAFKA_TOPIC_TRADES_RAW -> config.kafka.raw_topic`.
 - Default Kafka bootstrap behavior: `KAFKA_BOOTSTRAP_SERVERS`, falling back to `localhost:9092`.
-- Spark Structured Streaming Kafka source and typed Bronze parser.
-- Separate non-persisted Spark Bronze quality classifier that preserves each raw Kafka-like row, safely parses trade fields, and adds `is_valid` plus ordered `validation_errors` without changing the live Iceberg path.
+- Spark Structured Streaming Kafka source and Bronze quality classifier.
+- The live classifier preserves each raw Kafka row and audit fields, safely parses trade fields, and appends `is_valid` plus ordered `validation_errors` to the canonical 15-column Bronze contract.
 - Isolated persisted quality-contract helper: validates a classified 15-column DataFrame, creates or validates `market_catalog.market.bronze_trades_quality_smoke`, and performs a static Iceberg append. It rejects the canonical Bronze table, uses no checkpoint, and does not alter the live streaming path.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific S3A checkpoint configuration.
@@ -114,7 +114,9 @@ make iceberg-trade-stream
 
 The target runs:
 
-`Kafka source -> Bronze parser -> native Iceberg streaming sink -> S3A checkpoint`
+`Kafka source -> Bronze quality classifier -> canonical 15-column Iceberg table -> quality-v1 S3A checkpoint`
+
+Before reading Kafka or starting the query, the job requires the exact canonical 15-column schema. Its first start explicitly uses Kafka `startingOffsets=latest`; subsequent starts resume from `s3a://market-lake/checkpoints/market/bronze-trades-quality-v1`. The legacy checkpoint is retained but rejected by the quality job.
 
 Deployment values are supplied through the existing environment contract. See [.env.example](.env.example) for the Kafka, Iceberg REST catalog, MinIO/S3, table, checkpoint, query-name, and application-name groups.
 
@@ -134,7 +136,7 @@ The inspector reads an existing table without creating or modifying it, starting
 
 ## Bronze quality classification
 
-A separate Spark transformation can accept raw Kafka-like records, preserve every row with its raw JSON and Kafka audit metadata, safely parse the trade fields, and attach `is_valid` and ordered `validation_errors` labels. It does not filter records, change the existing Bronze table, start a streaming query, or participate in the canonical production storage path. Its output can now be persisted only through the isolated contract described below.
+The live Spark transformation accepts raw Kafka records, preserves every row with its raw JSON and Kafka audit metadata, safely parses trade fields, and persists `is_valid` plus ordered `validation_errors` in canonical Bronze. Invalid records are classified rather than filtered. See the [Bronze quality migration and cutover runbook](docs/runbooks/bronze-quality-migration.md) for the schema, checkpoint, and restart boundaries.
 
 ## Persisted Bronze quality contract
 
@@ -157,7 +159,7 @@ make iceberg-down
 
 The migration targets only `market_catalog.market.bronze_trades`. It recognizes `LEGACY_13_COLUMN`, `QUALITY_15_COLUMN`, and `INCOMPATIBLE` states; runs one additive `ALTER TABLE` only for the exact legacy schema; validates the final 15-column schema; and never drops, recreates, overwrites, truncates, or backfills rows. A second run reports `ALREADY_MIGRATED` without another ALTER. See the [Bronze quality migration runbook](docs/runbooks/bronze-quality-migration.md).
 
-The canonical table is now 15 columns in the controlled development environment. The live streaming code still produces the legacy 13-column DataFrame. **Do not restart the existing live streaming job until the next integration slice connects the classifier and configures the new versioned checkpoint.**
+The canonical table and live writer now share the exact 15-column quality contract. The live job uses the versioned `quality-v1` checkpoint and query name; it does not reuse or delete the legacy checkpoint.
 
 ## Shutdown behavior
 
@@ -259,7 +261,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 259 tests passed. Focused isolated quality-contract tests: 18 passed in `tests/unit/test_streaming_iceberg_quality_contract.py`; focused Bronze quality tests: 19 passed in `tests/unit/test_streaming_bronze_quality.py`; existing trade parser tests: 2 passed in `tests/unit/test_streaming_trades.py`. Focused inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`. Focused reconnect lifecycle tests remain 19 passed in `tests/unit/test_binance_publisher.py`.
+Latest verified suite: 298 tests passed. Live-quality integration coverage includes 2 Kafka-source tests, 7 S3A-checkpoint tests, 51 streaming-job tests, and 19 Bronze-classifier tests.
 
 ## Manual smoke checks
 
@@ -282,7 +284,7 @@ The broader Binance -> Kafka -> Spark -> Iceberg and checkpoint-recovery results
 - The producer still performs synchronous per-message `flush()` with no explicit timeout, which limits batching and throughput; its return value is not yet used as a queue policy.
 - `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.
 - There is no general end-to-end exactly-once guarantee.
-- The Bronze quality classifier is not connected to the canonical Iceberg sink. Its 15-column persistence is proven only on the isolated smoke table; canonical schema evolution, live integration, and new-checkpoint validation remain pending.
+- The controlled quality-v1 restart observed Kafka offsets `0..4` appended once, but this does not establish universal exactly-once behavior, replay support, or compatibility with the legacy writer/checkpoint.
 - The isolated quality smoke produced three rows and three data files. This is controlled contract evidence, not a compaction or file-layout guarantee; physical object purge after catalog cleanup was not separately proven.
 - Business-key deduplication is not implemented.
 - Monitoring, polling, batching, backpressure, replay, and backfill remain future work.
