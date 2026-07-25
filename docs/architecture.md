@@ -46,6 +46,19 @@ ClickHouse and dashboard serving are not part of the current implementation.
 - Dashboard or SQL layer: user-facing analysis surface.
 - Data-quality checks: basic validation for freshness, schema expectations, and event quality.
 
+### Kafka storage boundary
+
+The local single-broker KRaft service persists broker state through the named Compose volume `kafka_data`:
+
+```text
+KAFKA_LOG_DIRS=/var/lib/kafka/data
+named volume kafka_data -> /var/lib/kafka/data
+```
+
+The configured log directory, runtime log directory, and named-volume destination are the same. Ordinary `docker compose down` removes the Kafka container but does not remove this named volume, so the normal `down -> up` lifecycle preserves local topics, offsets, and records. This is local persistence evidence only; it does not provide replication, disaster recovery, or multi-broker fault tolerance.
+
+The prior misconfiguration mounted `/var/lib/kafka/data` while Kafka wrote to container-local `/tmp/kafka-logs`; the old log was not recoverable. The quality-v1 Spark checkpoint remains a separate preserved state and must not be reused with a newly created Kafka timeline. Future Kafka timeline changes require a new versioned checkpoint/query epoch such as quality-v2.
+
 ## Currently Implemented Foundation
 
 Implemented:

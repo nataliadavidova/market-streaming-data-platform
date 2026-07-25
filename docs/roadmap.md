@@ -34,6 +34,7 @@ Completed:
 - Clean top-level `SIGINT`/`KeyboardInterrupt` handling for expected operator shutdown.
 - Local Kafka service with Docker Compose.
 - Local Kafka Makefile commands for service lifecycle, topic creation, synthetic publish, and bounded consume-one checks.
+- Persistent Kafka broker state (`d5fe96f Persist Kafka broker state`): `KAFKA_LOG_DIRS=/var/lib/kafka/data` is backed by the named `kafka_data` volume. A controlled probe topic, offset `0:1`, topic identity, and message survived two ordinary `down -> up` cycles. This proves local broker persistence, not replication or disaster recovery.
 - Synthetic one-event Kafka producer smoke-check.
 - Manual live one-shot Binance WebSocket smoke-check.
 - Successful bounded live Binance-to-Kafka smoke-check through the executable producer and Kafka consumer.

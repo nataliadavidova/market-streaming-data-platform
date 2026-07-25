@@ -102,11 +102,16 @@ The canonical migration remains explicit through `make iceberg-migrate-bronze-qu
 Current local service config:
 
 - `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
+- Kafka broker state is persisted in the named Compose volume `kafka_data`, resolved locally as `market_streaming_data_platform_kafka_data`, mounted at `/var/lib/kafka/data` with `KAFKA_LOG_DIRS=/var/lib/kafka/data`. The ordinary `docker compose down` -> `up` lifecycle preserves local topics, offsets, and records. The previous container-local `/tmp/kafka-logs` state was not recoverable.
 - `docker compose config` has passed for the local services.
 - Makefile targets cover explicit Kafka/Iceberg lifecycle, topic checks, `iceberg-trade-stream`, `iceberg-inspect`, and `iceberg-migrate-bronze-quality`.
 - GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
 
 Latest repository state:
+
+- Kafka persistence implementation commit: `d5fe96f Persist Kafka broker state`.
+- Kafka persistence validation: focused configuration tests 4 passed, full suite 302 passed, Compose config and diff checks passed. Probe topic `market.kafka.persistence.probe.v2` retained TopicId `F-WKZJefSoClnDoU6F9JRw`, partition 0 offset `0:1`, and message `persistence-probe-v2` across two ordinary Kafka `down -> up` cycles.
+- The quality-v1 checkpoint remains preserved and must not be reused with a newly created Kafka timeline; future reset/cutover work should use a new versioned checkpoint/query epoch such as quality-v2.
 
 - Live quality integration commit: `c4228ff Connect Bronze quality live stream`.
 - Focused validation: Kafka source 2 passed, S3A checkpoint 7 passed, streaming job 51 passed, and Bronze classifier 19 passed.

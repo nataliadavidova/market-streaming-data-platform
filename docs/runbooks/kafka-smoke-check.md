@@ -77,6 +77,22 @@ Processed a total of 1 messages
 
 `make kafka-down` should shut the local Kafka service down cleanly.
 
+## Persistence boundary
+
+Kafka broker state is stored in the named Compose volume `kafka_data`, mounted at `/var/lib/kafka/data` with `KAFKA_LOG_DIRS=/var/lib/kafka/data`. The normal lifecycle is intentionally:
+
+```bash
+make kafka-up
+make kafka-down
+make kafka-up
+```
+
+Do not use `docker compose down -v` for this workflow. A successful persistence check should retain the topic, partition offsets, and message after the second `make kafka-up`. The previous configuration wrote to container-local `/tmp/kafka-logs`; that state was lost when its container was removed and is not recoverable.
+
+The controlled persistence proof used the isolated topic `market.kafka.persistence.probe.v2`: TopicId `F-WKZJefSoClnDoU6F9JRw`, partition `0`, end offset `1`, and message `persistence-probe-v2` survived two ordinary lifecycle cycles. This is local single-broker persistence evidence, not replication or disaster-recovery evidence.
+
+The Spark quality-v1 checkpoint remains preserved and must not be reused with a newly created Kafka timeline. Any future Kafka reset or cutover must use a new versioned checkpoint/query epoch such as quality-v2.
+
 ## Delivery Callback Smoke
 
 This is a separate producer-level check for the default delivery-result path. It does not replace the synthetic procedure above.

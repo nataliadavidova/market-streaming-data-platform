@@ -36,6 +36,7 @@ Current and planned technologies:
 - Binance WebSocket producer: implemented and live-smoke tested.
 - Producer CLI topic override: implemented and live-smoke tested.
 - Local Kafka infrastructure: implemented and smoke-tested.
+- Kafka broker persistence: implemented with a named `kafka_data` volume and smoke-tested across the normal Compose `down -> up` lifecycle.
 - Spark Kafka source: implemented.
 - Spark typed Bronze parser: implemented.
 - Bronze quality classification: implemented, statically Spark-tested, and connected to the canonical live stream.
@@ -103,6 +104,12 @@ Topic precedence is:
 `--topic -> KAFKA_TOPIC_TRADES_RAW -> config.kafka.raw_topic`
 
 Without an override, the producer uses `kafka.raw_topic` from `config/market_symbols.yaml`. The CLI override allows a dedicated topic without editing that tracked YAML file. No other producer CLI options are implied by this interface.
+
+## Kafka broker persistence
+
+Local Kafka stores broker state in the named Compose volume `kafka_data`, mounted at `/var/lib/kafka/data` with `KAFKA_LOG_DIRS=/var/lib/kafka/data`. The ordinary `make kafka-down` -> `make kafka-up` lifecycle therefore preserves local topics, offsets, and records. This is local single-broker persistence, not replication or disaster recovery.
+
+The previous configuration left Kafka state in container-local `/tmp/kafka-logs`; that old log was not recoverable. The quality-v1 Spark checkpoint remains preserved and must not be reused with a newly created Kafka timeline. A future Kafka reset or cutover should use a new versioned checkpoint/query epoch such as quality-v2.
 
 ## Running Spark -> Iceberg
 
