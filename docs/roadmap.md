@@ -41,6 +41,8 @@ Completed:
 - Spark Kafka source and typed Bronze parser.
 - Explicit non-persisted Bronze quality classification (`fba550e Add Bronze quality classification`): every input row is preserved, raw and Kafka audit evidence remains available, malformed JSON is classified, invalid decimals are safely handled with `try_cast`, and ordered `validation_errors` plus `is_valid` are produced without changing the write path.
 - Isolated persisted Bronze quality contract (`63f910c Add isolated Bronze quality contract`): the exact 15-column schema is validated and statically appended to `market_catalog.market.bronze_trades_quality_smoke`; canonical-table targeting is rejected, and no live stream or checkpoint is involved.
+- Canonical Bronze quality-schema migration (`f698e3d Add canonical Bronze quality migration`): exact 13- and 15-column schema states are detected, incompatible schemas are rejected, one additive `ALTER TABLE` is validated, and a second run is idempotent. The migration tests passed 28, existing Bronze tests passed 5, and the full suite passed 287.
+- Controlled canonical migration smoke passed with Spark 4.1.2, Iceberg 1.11.0, REST catalog, and MinIO. The table moved from 13 to 15 columns while its one row, one snapshot/history entry, latest snapshot `8232280423536300118`, one data file/path, and location remained unchanged. The historical quality fields are `NULL / NULL` (“not evaluated under the quality contract”). No backfill, live stream, Kafka, producer, or checkpoint operation occurred.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific Hadoop S3A checkpoint configuration.
 - Read-only Iceberg inspection workflow (`2d6ec09 Add Iceberg inspection workflow`) covering table identity, schema, row count, snapshots, history, data files, and partition metadata through `make iceberg-inspect`.
@@ -68,7 +70,7 @@ In progress:
 
 Planned:
 
-- Migrate canonical Bronze to the persisted quality contract: explicitly `ALTER TABLE` from 13 to 15 columns, connect `classify_raw_trade_kafka_messages(...)` to the live path, use a new versioned checkpoint rather than the current 13-column checkpoint, and run controlled start/restart validation. This migration is not implemented.
+- Connect the Bronze quality classifier to the canonical live stream: validate the exact 15-column table before stream start, replace the legacy parser with `classify_raw_trade_kafka_messages(...)`, introduce a new versioned checkpoint and query name, explicitly use `startingOffsets=latest` for first start, and run controlled initial-start and restart validation. The current legacy 13-column streaming job must remain stopped until this slice is complete.
 - Shutdown-latency investigation.
 - WebSocket close-timeout tuning or instrumentation.
 - Shutdown-stage timing.

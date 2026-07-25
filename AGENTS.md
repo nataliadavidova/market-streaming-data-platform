@@ -73,7 +73,7 @@ Add Terraform, cloud resources, deployment strategy, and optional Kubernetes.
 
 ## Current project state
 
-The latest completed live-ingestion milestone is Binance → Kafka → Spark → Iceberg with S3A checkpoint evidence; the newest storage milestone is the isolated persisted Bronze quality contract.
+The latest completed live-ingestion milestone is Binance → Kafka → Spark → Iceberg with S3A checkpoint evidence; the newest storage milestone is the canonical Bronze quality-schema migration. The canonical development table is now 15 columns, but the live writer remains on the legacy 13-column output until the next integration slice.
 
 Current Python package:
 
@@ -97,11 +97,13 @@ The non-persisted Bronze quality classifier is implemented in `jobs.streaming.br
 
 The isolated persisted Bronze quality contract is implemented in `jobs.streaming.iceberg_quality_contract`. It accepts the classifier's exact 15-column output, validates the isolated table schema and incoming DataFrame schema, and performs a static Iceberg append to `market_catalog.market.bronze_trades_quality_smoke`. The canonical table is explicitly rejected; no streaming query, checkpoint, or live write path is involved.
 
+The canonical migration is implemented in `jobs.streaming.iceberg_bronze_migration` and exposed through `make iceberg-migrate-bronze-quality`. It recognizes exact `LEGACY_13_COLUMN`, `QUALITY_15_COLUMN`, and `INCOMPATIBLE` states, executes one additive `ALTER TABLE` only for the legacy schema, validates the final 15-column schema, and never drops, recreates, overwrites, truncates, or backfills the table. After this migration, the existing live streaming job still produces the legacy 13-column DataFrame; do not restart it until the classifier-integration slice is complete.
+
 Current local service config:
 
 - `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
 - `docker compose config` has passed for the local services.
-- Makefile targets cover explicit Kafka/Iceberg lifecycle, topic checks, and `iceberg-trade-stream`.
+- Makefile targets cover explicit Kafka/Iceberg lifecycle, topic checks, `iceberg-trade-stream`, `iceberg-inspect`, and `iceberg-migrate-bronze-quality`.
 - GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
 
 Latest repository state:
@@ -111,6 +113,7 @@ Latest repository state:
 - Delivery-result observation commit: `52124a8 Observe Kafka delivery results`.
 - Bronze quality classification commit: `fba550e Add Bronze quality classification`.
 - Isolated persisted Bronze quality contract commit: `63f910c Add isolated Bronze quality contract`.
+- Canonical Bronze quality migration commit: `f698e3d Add canonical Bronze quality migration`.
 - Reconnect implementation commit: `89ec8dd Add Binance producer reconnect`.
 - Focused reconnect lifecycle tests: 19 passed in `test_binance_publisher.py`.
 - Focused Iceberg inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`.
@@ -119,8 +122,13 @@ Latest repository state:
 - Full suite at the previous quality milestone: 241 passed.
 - Isolated quality-contract tests: 18 passed in `tests/unit/test_streaming_iceberg_quality_contract.py`.
 - Full suite after the isolated contract: 259 passed.
+- Canonical migration tests: 28 passed in `tests/unit/test_streaming_iceberg_bronze_migration.py`.
+- Existing Bronze tests at the migration milestone: 5 passed in `tests/unit/test_streaming_iceberg_bronze.py`.
+- Full suite at the migration milestone: 287 passed.
 
 The controlled persisted quality-contract smoke passed with Spark 4.1.2, Iceberg 1.11.0, the Iceberg REST catalog, and MinIO. The isolated table was `market_catalog.market.bronze_trades_quality_smoke` at `s3://market-lake/warehouse/market/bronze_trades_quality_smoke`; it had 15 columns, 3 rows, 1 snapshot, and 3 data files. Outcomes were one valid row, one `MALFORMED_JSON` row, and one `INVALID_PRICE` row. The canonical `market_catalog.market.bronze_trades` remained at 13 columns, row count 1, snapshot count 1, latest snapshot `8232280423536300118`, and one data file before and after the smoke. The isolated table's catalog entry was dropped afterward; physical object purge was not separately proven, and services were stopped. No live stream or checkpoint was touched.
+
+The controlled canonical migration smoke then used Spark 4.1.2, Iceberg 1.11.0, the REST catalog, and MinIO. Before migration, `market_catalog.market.bronze_trades` at `s3://market-lake/warehouse/market/bronze_trades` had 13 columns, one row, one snapshot/history entry, latest snapshot `8232280423536300118`, and one data file. The first command returned `MIGRATED` and executed one ALTER. Afterwards the table had the exact 15-column schema, while row count, snapshot/history counts, latest snapshot, data-file count/path, and location were unchanged. The historical row had `is_valid = NULL` and `validation_errors = NULL`, meaning not evaluated under the quality contract. A second command returned `ALREADY_MIGRATED` without another ALTER. No backfill, Kafka, producer, streaming query, or checkpoint operation was used; services were stopped afterward.
 
 Verified runtime evidence:
 
@@ -182,6 +190,8 @@ Spark/Iceberg contract:
 - Iceberg uses the REST catalog plus S3FileIO; MinIO stores data and metadata objects locally.
 - Graceful Spark shutdown uses a shutdown event, timed `awaitTermination` polling, `query.stop()` before `spark.stop()`, and handler restoration after cleanup.
 - `jobs/streaming/iceberg_inspection.py` provides a bounded, read-only table inspection CLI. It validates safe dotted identifiers, uses the existing Iceberg-enabled Spark configuration, and stops its owned Spark session while preserving inspection errors when cleanup also fails.
+- `jobs/streaming/iceberg_bronze_migration.py` provides the explicit canonical migration CLI. It owns only its migration Spark session and does not connect the classifier or streaming job.
+- The canonical table is now 15 columns, while `iceberg_trade_streaming_job.py` still produces the legacy 13-column DataFrame. The old streaming job must remain stopped until classifier integration, a new versioned checkpoint, explicit first-start Kafka offset behavior, and controlled start/restart validation are implemented.
 
 Known limitations and backlog:
 
@@ -208,7 +218,7 @@ Other Markdown status:
 Next stage:
 
 - The non-persisted Bronze quality classification slice is complete; its earlier persisted-contract design guidance is now historical.
-- The isolated persisted Bronze quality contract slice is complete. The next storage slice is canonical Bronze quality migration: evolve the canonical table from 13 to 15 columns with explicit `ALTER TABLE`, connect the classifier to the live path, use a new versioned checkpoint rather than reusing the old 13-column checkpoint, and validate controlled start/restart behavior. Do not claim this migration is implemented.
+- The canonical Bronze schema migration slice is complete. The next task is canonical live quality integration: connect `classify_raw_trade_kafka_messages(...)`, validate the exact 15-column table before starting the stream, introduce a new versioned checkpoint and query name, set explicit `startingOffsets=latest` for first start, and validate controlled initial-start and restart behavior. Do not restart the current legacy writer before that slice is complete.
 - Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and broader monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
@@ -266,7 +276,7 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-Reconnect, default-path delivery-result observation, reconnect lifecycle logging, read-only Iceberg inspection, non-persisted Bronze quality classification, and isolated persisted quality-contract validation are implemented and tested. The next storage slice is canonical Bronze quality migration. Keep producer throughput/per-message flush, broader monitoring, historical backfill, Silver, and maintenance separate from that storage work.
+Reconnect, default-path delivery-result observation, reconnect lifecycle logging, read-only Iceberg inspection, non-persisted Bronze quality classification, isolated persisted quality-contract validation, and canonical Bronze schema migration are implemented and tested. The next storage slice is canonical Bronze live quality integration. Keep producer throughput/per-message flush, broader monitoring, historical backfill, Silver, and maintenance separate from that storage work.
 
 ## Historical pre-52124a8 next step
 
@@ -279,4 +289,5 @@ Current test suite:
 - 20 focused Iceberg inspection tests pass in `tests/unit/test_streaming_iceberg_inspection.py`.
 - 19 focused reconnect lifecycle tests pass in `tests/unit/test_binance_publisher.py`.
 - 259 tests pass in the full suite after the isolated persisted contract.
+- 28 canonical migration tests and 287 full-suite tests pass at the canonical migration milestone.
 - Tests are not automatically rerun for documentation-only changes unless explicitly requested.

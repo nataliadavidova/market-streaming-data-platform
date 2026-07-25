@@ -40,6 +40,7 @@ Current and planned technologies:
 - Spark typed Bronze parser: implemented.
 - Non-persisted Bronze quality classification: implemented and statically Spark-tested.
 - Isolated persisted Bronze quality contract: implemented and controlled-smoke tested.
+- Canonical Bronze quality-schema migration: implemented and controlled-smoke tested; the development table now has 15 columns, while live-writer integration remains intentionally pending.
 - Iceberg REST catalog and S3FileIO configuration: implemented.
 - Iceberg Bronze table: implemented.
 - Native Iceberg streaming sink: implemented.
@@ -141,9 +142,22 @@ The classifier can now be persisted through a strictly isolated static contract:
 
 `classified 15-column DataFrame -> exact schema validation -> static Iceberg append`
 
-The smoke table is `market_catalog.market.bronze_trades_quality_smoke`. It contains the existing 13 Bronze fields plus `is_valid` and `validation_errors`. The helper validates both the existing table schema and incoming DataFrame contract before appending, rejects the canonical table as a target, and uses no streaming query or checkpoint. The canonical live Bronze table and its write path remain unchanged.
+The smoke table is `market_catalog.market.bronze_trades_quality_smoke`. It contains the existing 13 Bronze fields plus `is_valid` and `validation_errors`. The helper validates both the existing table schema and incoming DataFrame contract before appending, rejects the canonical table as a target, and uses no streaming query or checkpoint. That isolated workflow does not alter the canonical table; its separate migration is documented below.
 
-The next step is a separately reviewed canonical migration: evolve the canonical table with `ALTER TABLE`, connect the classifier to the live path, and use a new versioned checkpoint rather than reusing the current 13-column checkpoint.
+## Migrating canonical Bronze
+
+The explicit, idempotent migration workflow is:
+
+```bash
+make iceberg-up
+make iceberg-migrate-bronze-quality
+make iceberg-inspect
+make iceberg-down
+```
+
+The migration targets only `market_catalog.market.bronze_trades`. It recognizes `LEGACY_13_COLUMN`, `QUALITY_15_COLUMN`, and `INCOMPATIBLE` states; runs one additive `ALTER TABLE` only for the exact legacy schema; validates the final 15-column schema; and never drops, recreates, overwrites, truncates, or backfills rows. A second run reports `ALREADY_MIGRATED` without another ALTER. See the [Bronze quality migration runbook](docs/runbooks/bronze-quality-migration.md).
+
+The canonical table is now 15 columns in the controlled development environment. The live streaming code still produces the legacy 13-column DataFrame. **Do not restart the existing live streaming job until the next integration slice connects the classifier and configures the new versioned checkpoint.**
 
 ## Shutdown behavior
 
