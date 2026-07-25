@@ -50,3 +50,23 @@ def test_read_raw_trade_kafka_stream_builds_required_kafka_source() -> None:
         ("subscribe", "market.trades.raw"),
     ]
     assert read_stream.load_calls == 1
+
+
+def test_read_raw_trade_kafka_stream_sets_optional_starting_offsets() -> None:
+    result = object()
+    read_stream = RecordingDataStreamReader(result)
+    spark = RecordingSparkSession(read_stream)
+
+    stream = read_raw_trade_kafka_stream(
+        cast(SparkSession, spark),
+        bootstrap_servers="localhost:9092",
+        topic="market.trades.raw",
+        starting_offsets="latest",
+    )
+
+    assert stream is cast(DataFrame, result)
+    assert read_stream.options == [
+        ("kafka.bootstrap.servers", "localhost:9092"),
+        ("subscribe", "market.trades.raw"),
+        ("startingOffsets", "latest"),
+    ]

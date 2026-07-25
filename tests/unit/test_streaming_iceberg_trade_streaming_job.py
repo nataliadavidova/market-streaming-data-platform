@@ -6,7 +6,14 @@ from contextlib import contextmanager
 
 import pytest
 
-from jobs.streaming import iceberg_trade_streaming_job
+from jobs.streaming import (
+    iceberg_bronze_migration,
+    iceberg_trade_streaming_job,
+)
+from jobs.streaming.s3a_checkpoint import (
+    LEGACY_BRONZE_CHECKPOINT_LOCATION,
+    QUALITY_BRONZE_CHECKPOINT_LOCATION,
+)
 
 
 class RecordingSparkBuilder:
@@ -280,6 +287,68 @@ def test_verify_iceberg_table_exists_executes_exact_describe() -> None:
     ]
 
 
+def test_quality_schema_validation_accepts_exact_migrated_state(
+    monkeypatch,
+) -> None:
+    spark = FakeSpark()
+    inspect_calls: list[tuple[object, str]] = []
+
+    def fake_inspect(received_spark, *, table_name):
+        inspect_calls.append((received_spark, table_name))
+        return iceberg_bronze_migration.BronzeSchemaState.QUALITY_15_COLUMN
+
+    monkeypatch.setattr(
+        iceberg_bronze_migration,
+        "inspect_bronze_schema_state",
+        fake_inspect,
+    )
+
+    result = iceberg_trade_streaming_job.require_quality_bronze_table_schema(
+        spark,
+        table_name="market_catalog.market.bronze_trades",
+    )
+
+    assert result is None
+    assert inspect_calls == [
+        (spark, "market_catalog.market.bronze_trades")
+    ]
+    assert spark.sql_calls == []
+
+
+@pytest.mark.parametrize(
+    "schema_state",
+    [
+        iceberg_bronze_migration.BronzeSchemaState.LEGACY_13_COLUMN,
+        iceberg_bronze_migration.BronzeSchemaState.INCOMPATIBLE,
+    ],
+)
+def test_quality_schema_validation_rejects_nonquality_state_without_migration(
+    monkeypatch,
+    schema_state,
+) -> None:
+    spark = FakeSpark()
+    migration_calls: list[object] = []
+    monkeypatch.setattr(
+        iceberg_bronze_migration,
+        "inspect_bronze_schema_state",
+        lambda received_spark, *, table_name: schema_state,
+    )
+    monkeypatch.setattr(
+        iceberg_bronze_migration,
+        "migrate_bronze_table_to_quality_contract",
+        lambda received_spark: migration_calls.append(received_spark),
+    )
+
+    with pytest.raises(RuntimeError, match=schema_state.value):
+        iceberg_trade_streaming_job.require_quality_bronze_table_schema(
+            spark,
+            table_name="market_catalog.market.bronze_trades",
+        )
+
+    assert migration_calls == []
+    assert spark.sql_calls == []
+
+
 def install_orchestration_fakes(
     monkeypatch,
     *,
@@ -290,7 +359,7 @@ def install_orchestration_fakes(
     record_handler_events: bool = False,
 ) -> tuple[object, object, dict[str, object]]:
     raw_stream = object()
-    parsed_stream = object()
+    classified_stream = object()
     calls: dict[str, object] = {}
 
     def fake_build(**kwargs):
@@ -303,10 +372,16 @@ def install_orchestration_fakes(
         calls["source"] = (received_spark, kwargs)
         return raw_stream
 
-    def fake_parser(received_stream):
-        events.append("parser")
-        calls["parser"] = received_stream
-        return parsed_stream
+    def fake_schema_validation(received_spark, **kwargs):
+        events.append("schema validation")
+        calls["schema"] = (received_spark, kwargs)
+        if received_spark.sql_error is not None:
+            raise received_spark.sql_error
+
+    def fake_classifier(received_stream):
+        events.append("classifier")
+        calls["classifier"] = received_stream
+        return classified_stream
 
     def fake_sink(received_stream, **kwargs):
         events.append("Iceberg sink")
@@ -339,8 +414,13 @@ def install_orchestration_fakes(
     )
     monkeypatch.setattr(
         iceberg_trade_streaming_job,
-        "parse_raw_trade_kafka_messages",
-        fake_parser,
+        "require_quality_bronze_table_schema",
+        fake_schema_validation,
+    )
+    monkeypatch.setattr(
+        iceberg_trade_streaming_job,
+        "classify_raw_trade_kafka_messages",
+        fake_classifier,
     )
     monkeypatch.setattr(
         iceberg_trade_streaming_job,
@@ -352,7 +432,7 @@ def install_orchestration_fakes(
         "_installed_shutdown_handlers",
         fake_handlers,
     )
-    return raw_stream, parsed_stream, calls
+    return raw_stream, classified_stream, calls
 
 
 def test_run_stream_composes_dependencies_and_stops_active_resources(
@@ -366,7 +446,7 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
         await_results=[False],
         request_shutdown_on_await=True,
     )
-    raw_stream, parsed_stream, calls = install_orchestration_fakes(
+    raw_stream, classified_stream, calls = install_orchestration_fakes(
         monkeypatch,
         spark=spark,
         query=query,
@@ -379,9 +459,9 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
     assert result is None
     assert events == [
         "build session",
-        "table check",
+        "schema validation",
         "Kafka source",
-        "parser",
+        "classifier",
         "Iceberg sink",
         "install handlers",
         "awaitTermination",
@@ -394,11 +474,16 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
         {
             "bootstrap_servers": "localhost:9092",
             "topic": "market.trades.raw",
+            "starting_offsets": "latest",
         },
     )
-    assert calls["parser"] is raw_stream
+    assert calls["schema"] == (
+        spark,
+        {"table_name": "market_catalog.market.bronze_trades"},
+    )
+    assert calls["classifier"] is raw_stream
     assert calls["sink"] == (
-        parsed_stream,
+        classified_stream,
         {
             "table_name": "market_catalog.market.bronze_trades",
             "checkpoint_location": "s3a://market-lake/checkpoints/bronze-trades",
@@ -410,6 +495,27 @@ def test_run_stream_composes_dependencies_and_stops_active_resources(
     assert query.await_timeouts == [1.0]
     assert query.stop_count == 1
     assert spark.stop_count == 1
+
+
+def test_run_stream_rejects_legacy_checkpoint_before_building_spark(
+    monkeypatch,
+) -> None:
+    build_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        iceberg_trade_streaming_job,
+        "build_iceberg_trade_spark_session",
+        lambda **kwargs: build_calls.append(kwargs),
+    )
+
+    with pytest.raises(ValueError, match="legacy checkpoint"):
+        iceberg_trade_streaming_job.run_iceberg_trade_stream(
+            **{
+                **RUN_ARGUMENTS,
+                "checkpoint_location": LEGACY_BRONZE_CHECKPOINT_LOCATION,
+            }
+        )
+
+    assert build_calls == []
 
 
 def test_run_stream_does_not_stop_inactive_query(monkeypatch) -> None:
@@ -430,8 +536,10 @@ def test_run_stream_does_not_stop_inactive_query(monkeypatch) -> None:
     assert spark.stop_count == 1
 
 
-def test_run_stream_stops_spark_after_table_check_failure(monkeypatch) -> None:
-    error = RuntimeError("table missing")
+def test_run_stream_stops_spark_after_schema_validation_failure(
+    monkeypatch,
+) -> None:
+    error = RuntimeError("schema incompatible")
     events: list[str] = []
     spark = FakeSpark(events, sql_error=error)
     query = FakeQuery(events)
@@ -446,7 +554,7 @@ def test_run_stream_stops_spark_after_table_check_failure(monkeypatch) -> None:
         iceberg_trade_streaming_job.run_iceberg_trade_stream(**RUN_ARGUMENTS)
 
     assert exc_info.value is error
-    assert events == ["build session", "table check", "spark.stop"]
+    assert events == ["build session", "schema validation", "spark.stop"]
     assert query.await_count == 0
     assert query.stop_count == 0
     assert spark.stop_count == 1
@@ -470,9 +578,9 @@ def test_run_stream_stops_spark_after_sink_creation_failure(monkeypatch) -> None
     assert exc_info.value is error
     assert events == [
         "build session",
-        "table check",
+        "schema validation",
         "Kafka source",
-        "parser",
+        "classifier",
         "Iceberg sink",
         "spark.stop",
     ]
@@ -834,9 +942,9 @@ def test_parse_args_uses_local_fallbacks() -> None:
         "s3_access_key": "minioadmin",
         "s3_secret_key": "minioadmin",
         "checkpoint_location": (
-            "s3a://market-lake/checkpoints/market/bronze-trades"
+            "s3a://market-lake/checkpoints/market/bronze-trades-quality-v1"
         ),
-        "query_name": "market-iceberg-bronze-trades",
+        "query_name": "market-iceberg-bronze-trades-quality-v1",
         "processing_time": None,
         "s3_path_style_access": True,
         "s3a_ssl_enabled": False,
@@ -885,6 +993,16 @@ def test_parse_args_uses_environment_defaults_without_mutating_mapping() -> None
         "s3a_ssl_enabled": True,
     }
     assert environ == original_environ
+
+
+def test_parse_args_uses_versioned_quality_defaults() -> None:
+    args = iceberg_trade_streaming_job.parse_args([], environ={})
+
+    assert args.checkpoint_location == QUALITY_BRONZE_CHECKPOINT_LOCATION
+    assert args.checkpoint_location != LEGACY_BRONZE_CHECKPOINT_LOCATION
+    assert args.query_name == (
+        "market-iceberg-bronze-trades-quality-v1"
+    )
 
 
 def test_parse_args_cli_values_override_environment_defaults() -> None:

@@ -2,7 +2,12 @@
 
 import pytest
 
-from jobs.streaming.s3a_checkpoint import configure_s3a_checkpoint_storage
+from jobs.streaming.s3a_checkpoint import (
+    LEGACY_BRONZE_CHECKPOINT_LOCATION,
+    QUALITY_BRONZE_CHECKPOINT_LOCATION,
+    configure_s3a_checkpoint_storage,
+    validate_quality_checkpoint_location,
+)
 
 
 EXPECTED_DEFAULT_CONFIGS = [
@@ -30,6 +35,29 @@ class RecordingSparkBuilder:
             raise RuntimeError("config failed")
         self.configs.append((key, value))
         return self
+
+
+def test_quality_checkpoint_is_versioned_and_legacy_constant_remains() -> None:
+    assert LEGACY_BRONZE_CHECKPOINT_LOCATION == (
+        "s3a://market-lake/checkpoints/market/bronze-trades"
+    )
+    assert QUALITY_BRONZE_CHECKPOINT_LOCATION == (
+        "s3a://market-lake/checkpoints/market/bronze-trades-quality-v1"
+    )
+
+
+def test_quality_checkpoint_guard_rejects_exact_legacy_path() -> None:
+    with pytest.raises(ValueError, match="legacy checkpoint"):
+        validate_quality_checkpoint_location(LEGACY_BRONZE_CHECKPOINT_LOCATION)
+
+
+def test_quality_checkpoint_guard_accepts_versioned_and_custom_paths() -> None:
+    assert validate_quality_checkpoint_location(
+        QUALITY_BRONZE_CHECKPOINT_LOCATION
+    ) == QUALITY_BRONZE_CHECKPOINT_LOCATION
+    assert validate_quality_checkpoint_location(
+        "s3a://market-lake/checkpoints/smoke/custom"
+    ) == "s3a://market-lake/checkpoints/smoke/custom"
 
 
 def test_configure_s3a_checkpoint_storage_sets_default_minio_configuration() -> None:

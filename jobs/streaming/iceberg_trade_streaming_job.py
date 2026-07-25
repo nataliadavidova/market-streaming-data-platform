@@ -11,14 +11,21 @@ from typing import Protocol
 
 from pyspark.sql import SparkSession
 
+from jobs.streaming.bronze_quality import classify_raw_trade_kafka_messages
+from jobs.streaming.iceberg_bronze import CANONICAL_BRONZE_TABLE_NAME
 from jobs.streaming.iceberg_catalog import configure_iceberg_rest_catalog
 from jobs.streaming.iceberg_sink import start_bronze_trade_stream
 from jobs.streaming.kafka_source import read_raw_trade_kafka_stream
-from jobs.streaming.s3a_checkpoint import configure_s3a_checkpoint_storage
-from jobs.streaming.trades import parse_raw_trade_kafka_messages
+from jobs.streaming.s3a_checkpoint import (
+    QUALITY_BRONZE_CHECKPOINT_LOCATION,
+    configure_s3a_checkpoint_storage,
+    validate_quality_checkpoint_location,
+)
 
 
 _SHUTDOWN_POLL_INTERVAL_SECONDS = 1.0
+QUALITY_BRONZE_QUERY_NAME = "market-iceberg-bronze-trades-quality-v1"
+QUALITY_KAFKA_STARTING_OFFSETS = "latest"
 
 
 class SparkSessionBuilderLike(Protocol):
@@ -211,6 +218,25 @@ def verify_iceberg_table_exists(
     spark.sql(f"DESCRIBE TABLE EXTENDED {table_name}")
 
 
+def require_quality_bronze_table_schema(
+    spark: object,
+    *,
+    table_name: str,
+) -> None:
+    """Fail before streaming unless the canonical table has the quality schema."""
+    from jobs.streaming.iceberg_bronze_migration import (
+        BronzeSchemaState,
+        inspect_bronze_schema_state,
+    )
+
+    schema_state = inspect_bronze_schema_state(spark, table_name=table_name)
+    if schema_state is not BronzeSchemaState.QUALITY_15_COLUMN:
+        raise RuntimeError(
+            "canonical Bronze table must have the exact quality schema before "
+            f"streaming; found {schema_state.value}"
+        )
+
+
 def run_iceberg_trade_stream(
     *,
     bootstrap_servers: str,
@@ -231,6 +257,9 @@ def run_iceberg_trade_stream(
     s3a_ssl_enabled: bool = False,
 ) -> None:
     """Run the Kafka-to-Iceberg trade stream until the query terminates."""
+    checkpoint_location = validate_quality_checkpoint_location(
+        checkpoint_location
+    )
     spark = build_iceberg_trade_spark_session(
         app_name=app_name,
         catalog_name=catalog_name,
@@ -247,15 +276,16 @@ def run_iceberg_trade_stream(
     cleanup_completed = False
 
     try:
-        verify_iceberg_table_exists(spark, table_name=table_name)
+        require_quality_bronze_table_schema(spark, table_name=table_name)
         raw_stream = read_raw_trade_kafka_stream(
             spark,
             bootstrap_servers=bootstrap_servers,
             topic=topic,
+            starting_offsets=QUALITY_KAFKA_STARTING_OFFSETS,
         )
-        parsed_trades = parse_raw_trade_kafka_messages(raw_stream)
+        classified_trades = classify_raw_trade_kafka_messages(raw_stream)
         query = start_bronze_trade_stream(
-            parsed_trades,
+            classified_trades,
             table_name=table_name,
             checkpoint_location=checkpoint_location,
             query_name=query_name,
@@ -357,7 +387,7 @@ def parse_args(
         "--table-name",
         default=environment.get(
             "ICEBERG_BRONZE_TABLE",
-            "market_catalog.market.bronze_trades",
+            CANONICAL_BRONZE_TABLE_NAME,
         ),
     )
     parser.add_argument(
@@ -380,14 +410,14 @@ def parse_args(
         "--checkpoint-location",
         default=environment.get(
             "ICEBERG_TRADE_CHECKPOINT_LOCATION",
-            "s3a://market-lake/checkpoints/market/bronze-trades",
+            QUALITY_BRONZE_CHECKPOINT_LOCATION,
         ),
     )
     parser.add_argument(
         "--query-name",
         default=environment.get(
             "ICEBERG_TRADE_QUERY_NAME",
-            "market-iceberg-bronze-trades",
+            QUALITY_BRONZE_QUERY_NAME,
         ),
     )
     parser.add_argument(

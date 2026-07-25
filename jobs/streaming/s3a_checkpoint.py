@@ -12,6 +12,21 @@ S3A_FILE_SYSTEM = "org.apache.hadoop.fs.s3a.S3AFileSystem"
 S3A_SIMPLE_CREDENTIALS_PROVIDER = (
     "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
 )
+LEGACY_BRONZE_CHECKPOINT_LOCATION = (
+    "s3a://market-lake/checkpoints/market/bronze-trades"
+)
+QUALITY_BRONZE_CHECKPOINT_LOCATION = (
+    "s3a://market-lake/checkpoints/market/bronze-trades-quality-v1"
+)
+
+
+def validate_quality_checkpoint_location(checkpoint_location: str) -> str:
+    """Reject accidental reuse of the legacy 13-column streaming checkpoint."""
+    if checkpoint_location == LEGACY_BRONZE_CHECKPOINT_LOCATION:
+        raise ValueError(
+            "the Bronze quality stream cannot use the legacy checkpoint"
+        )
+    return checkpoint_location
 
 
 def configure_s3a_checkpoint_storage(
