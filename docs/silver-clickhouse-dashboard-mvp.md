@@ -33,11 +33,11 @@ Metrics use valid Silver rows only:
 | `trade_count` | `count(*)` of Silver rows |
 | `notional` | `price * quantity` using exact decimal arithmetic |
 | `notional_volume` | `sum(notional)` |
-| `latest_price` | `price` from the greatest `event_time` in the selected symbol/time context; ties use the greatest Kafka partition and offset |
+| `latest_price` | `price` from the maximum ordered identity `(event_time, kafka_partition, kafka_offset)` in the selected symbol/time context; ClickHouse may implement this with an equivalent deterministic `argMax` expression |
 | `latency_ms` | `ingested_at_ms - event_time_ms` |
 | `median_latency_ms` | median of `latency_ms` for the selected context; an average may be shown if the dashboard engine lacks a suitable median function |
 
-The Bronze timestamp fields are Unix epoch milliseconds stored as `BIGINT`. Silver keeps the source millisecond values available during transformation and exposes `event_time` and `ingested_at` as millisecond-precision timestamps. `latency_ms` remains a signed `BIGINT`; negative values are retained for investigation rather than silently clipped.
+The Bronze timestamp fields are Unix epoch milliseconds stored as `BIGINT`. `event_time` is the Binance event timestamp represented in UTC, and `ingested_at` is the producer ingestion timestamp represented in UTC. Spark must use an explicit UTC session/time-zone configuration and preserve millisecond precision. `latency_ms` is exactly `ingested_at_ms - event_time_ms`: source-to-ingestion latency, not end-to-end Kafka/Spark/Iceberg/ClickHouse processing latency. It remains signed; negative values are retained for clock or source anomalies and are never silently clamped.
 
 Dashboard grains are raw trade rows in Silver and minute-level grouping in ClickHouse queries or Superset datasets. No permanent Gold aggregate table is introduced.
 
@@ -91,7 +91,22 @@ AND is_valid IS NOT NULL
 
 Thus `false` rows and historical `NULL`/`NULL` rows are excluded. `raw_json`, `validation_errors`, and `kafka_key` are not carried initially because Silver is analytical; Kafka coordinates retain the link back to Bronze. No deduplication, grouping, identity rewrite, or silent correction is performed.
 
-Spark decimal multiplication must remain decimal throughout. The implementation should make the resulting `notional` type explicit and test overflow behavior before any runtime load; it must never route through `DOUBLE`.
+Spark decimal multiplication must remain decimal throughout. The implementation must explicitly cast the result to the agreed `DECIMAL(38,18)` target, test both scale/precision and overflow behavior, and fail visibly if the value cannot be represented. It must never route through `DOUBLE` or silently reduce scale.
+
+The current preserved Bronze evidence is 188 rows: 184 valid, 3 invalid, and 1 historical row with `is_valid IS NULL`. The first Silver build is expected to produce 184 rows, but this is a runtime expectation to verify, not a value hard-coded into production logic.
+
+### Deterministic Silver materialization
+
+Every bounded Silver run is a full rebuild, not an append:
+
+```text
+canonical Bronze
+→ select is_valid = true
+→ construct the complete Silver dataset
+→ replace previous Silver state
+```
+
+The implementation must validate the exact Iceberg replacement mechanism at runtime. Candidates are `INSERT OVERWRITE`, `CREATE OR REPLACE TABLE AS SELECT`, or a staging table followed by replacement. No mechanism is selected here without evidence that the project Spark/Iceberg runtime supports it. Two consecutive builds over unchanged Bronze must produce the same row count and the same Kafka topic/partition/offset identities, with no duplicate Silver rows.
 
 ## 5. Serving alternatives
 
@@ -133,7 +148,15 @@ ORDER BY (symbol, event_time, kafka_partition, kafka_offset)
 
 At the current local scale, daily partitioning adds lifecycle complexity without a demonstrated benefit; do not partition the first table merely by convention.
 
-For the first demo dataset, use a deterministic full rebuild: load Silver into a fresh or explicitly cleared demo table, then expose it to Superset. This avoids inventing a watermark store or a deduplication framework. The load command must make its rebuild boundary explicit and must never claim incremental or exactly-once behavior. A later incremental design can use the maximum processed Silver/Iceberg snapshot or Kafka coordinate only after measured requirements exist.
+For the first demo dataset, use a deterministic full rebuild with a staging table:
+
+```text
+build/load staging table
+→ validate row count and expected symbols
+→ replace or swap market_analytics.silver_trades
+```
+
+If atomic replacement is unsupported or disproportionate, a simpler rebuild is allowed only when its interruption window and partial-state limitation are documented clearly. The load command must make its rebuild boundary explicit and must never claim incremental or exactly-once behavior. Two loads over unchanged Silver must return the same row count without duplication. A later incremental design can use a measured watermark only after requirements exist.
 
 `ReplacingMergeTree` is not recommended now: it would introduce deduplication semantics that are explicitly out of scope and could obscure duplicate-source behavior.
 
@@ -160,7 +183,7 @@ Charts:
 - notional volume per minute by symbol
 - latency over time or a latency distribution
 
-Datasets should query `market_analytics.silver_trades` directly. No authentication, role model, alerting, scheduled reports, or production BI governance is part of this local milestone.
+Datasets should query `market_analytics.silver_trades` directly. Dashboard freshness is refresh-based in this milestone, not continuous real-time serving. No authentication, role model, alerting, scheduled reports, or production BI governance is part of this local milestone.
 
 ## 8. Recommended implementation sequence
 
@@ -180,15 +203,16 @@ The first implementation branch should stop after deterministic Silver tests and
 The implemented milestone is complete when it proves:
 
 1. `market_catalog.market.silver_trades` exists with the agreed schema.
-2. Only valid Bronze rows are transformed; invalid and historical unevaluated rows are absent.
+2. Only valid Bronze rows are transformed; invalid and historical unevaluated rows are absent; the current preserved dataset produces 184 rows.
 3. Decimal price, quantity, and notional calculations remain exact.
 4. Epoch-millisecond conversion and `latency_ms` are correct.
 5. Kafka topic/partition/offset coordinates remain traceable.
-6. Silver data loads repeatedly into ClickHouse using the documented full-rebuild boundary.
-7. ClickHouse queries return the expected BTCUSDT, ETHUSDT, and SOLUSDT dimensions.
-8. Superset displays the four KPI cards and four compact charts with symbol/time filters.
-9. A short subsequent real Binance run becomes visible after the supported refresh/load procedure.
-10. The process is documented and reproducible locally.
+6. Two consecutive Silver builds over unchanged Bronze produce the same row count and transport identities without duplicate rows.
+7. Silver data loads repeatedly into ClickHouse using the documented staging/full-rebuild boundary without duplication.
+8. ClickHouse queries return the expected BTCUSDT, ETHUSDT, and SOLUSDT dimensions.
+9. Superset displays the four KPI cards and four compact charts with symbol/time filters.
+10. A short subsequent real Binance run becomes visible after the supported refresh/load procedure.
+11. The process is documented and reproducible locally.
 
 ## 10. Non-goals
 
