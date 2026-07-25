@@ -12,6 +12,8 @@ from jobs.streaming import (
 )
 from jobs.streaming.s3a_checkpoint import (
     LEGACY_BRONZE_CHECKPOINT_LOCATION,
+    QUALITY_V1_BRONZE_CHECKPOINT_LOCATION,
+    QUALITY_V2_BRONZE_CHECKPOINT_LOCATION,
     QUALITY_BRONZE_CHECKPOINT_LOCATION,
 )
 
@@ -507,11 +509,32 @@ def test_run_stream_rejects_legacy_checkpoint_before_building_spark(
         lambda **kwargs: build_calls.append(kwargs),
     )
 
-    with pytest.raises(ValueError, match="legacy checkpoint"):
+    with pytest.raises(ValueError, match="legacy or quality-v1 checkpoint"):
         iceberg_trade_streaming_job.run_iceberg_trade_stream(
             **{
                 **RUN_ARGUMENTS,
                 "checkpoint_location": LEGACY_BRONZE_CHECKPOINT_LOCATION,
+            }
+        )
+
+    assert build_calls == []
+
+
+def test_run_stream_rejects_quality_v1_checkpoint_before_building_spark(
+    monkeypatch,
+) -> None:
+    build_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        iceberg_trade_streaming_job,
+        "build_iceberg_trade_spark_session",
+        lambda **kwargs: build_calls.append(kwargs),
+    )
+
+    with pytest.raises(ValueError, match="legacy or quality-v1 checkpoint"):
+        iceberg_trade_streaming_job.run_iceberg_trade_stream(
+            **{
+                **RUN_ARGUMENTS,
+                "checkpoint_location": QUALITY_V1_BRONZE_CHECKPOINT_LOCATION,
             }
         )
 
@@ -942,9 +965,9 @@ def test_parse_args_uses_local_fallbacks() -> None:
         "s3_access_key": "minioadmin",
         "s3_secret_key": "minioadmin",
         "checkpoint_location": (
-            "s3a://market-lake/checkpoints/market/bronze-trades-quality-v1"
+            "s3a://market-lake/checkpoints/market/bronze-trades-quality-v2"
         ),
-        "query_name": "market-iceberg-bronze-trades-quality-v1",
+        "query_name": "market-iceberg-bronze-trades-quality-v2",
         "processing_time": None,
         "s3_path_style_access": True,
         "s3a_ssl_enabled": False,
@@ -1000,8 +1023,10 @@ def test_parse_args_uses_versioned_quality_defaults() -> None:
 
     assert args.checkpoint_location == QUALITY_BRONZE_CHECKPOINT_LOCATION
     assert args.checkpoint_location != LEGACY_BRONZE_CHECKPOINT_LOCATION
+    assert args.checkpoint_location != QUALITY_V1_BRONZE_CHECKPOINT_LOCATION
+    assert args.checkpoint_location == QUALITY_V2_BRONZE_CHECKPOINT_LOCATION
     assert args.query_name == (
-        "market-iceberg-bronze-trades-quality-v1"
+        "market-iceberg-bronze-trades-quality-v2"
     )
 
 

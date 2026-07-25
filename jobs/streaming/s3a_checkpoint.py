@@ -15,16 +15,23 @@ S3A_SIMPLE_CREDENTIALS_PROVIDER = (
 LEGACY_BRONZE_CHECKPOINT_LOCATION = (
     "s3a://market-lake/checkpoints/market/bronze-trades"
 )
-QUALITY_BRONZE_CHECKPOINT_LOCATION = (
+QUALITY_V1_BRONZE_CHECKPOINT_LOCATION = (
     "s3a://market-lake/checkpoints/market/bronze-trades-quality-v1"
 )
+QUALITY_V2_BRONZE_CHECKPOINT_LOCATION = (
+    "s3a://market-lake/checkpoints/market/bronze-trades-quality-v2"
+)
+QUALITY_BRONZE_CHECKPOINT_LOCATION = QUALITY_V2_BRONZE_CHECKPOINT_LOCATION
 
 
 def validate_quality_checkpoint_location(checkpoint_location: str) -> str:
-    """Reject accidental reuse of the legacy 13-column streaming checkpoint."""
-    if checkpoint_location == LEGACY_BRONZE_CHECKPOINT_LOCATION:
+    """Reject reuse of checkpoints belonging to an earlier Bronze epoch."""
+    if checkpoint_location in {
+        LEGACY_BRONZE_CHECKPOINT_LOCATION,
+        QUALITY_V1_BRONZE_CHECKPOINT_LOCATION,
+    }:
         raise ValueError(
-            "the Bronze quality stream cannot use the legacy checkpoint"
+            "the Bronze quality stream cannot use a legacy or quality-v1 checkpoint"
         )
     return checkpoint_location
 

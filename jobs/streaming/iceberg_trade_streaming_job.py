@@ -24,7 +24,7 @@ from jobs.streaming.s3a_checkpoint import (
 
 
 _SHUTDOWN_POLL_INTERVAL_SECONDS = 1.0
-QUALITY_BRONZE_QUERY_NAME = "market-iceberg-bronze-trades-quality-v1"
+QUALITY_BRONZE_QUERY_NAME = "market-iceberg-bronze-trades-quality-v2"
 QUALITY_KAFKA_STARTING_OFFSETS = "latest"
 
 
