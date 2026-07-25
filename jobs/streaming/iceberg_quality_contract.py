@@ -7,29 +7,17 @@ from typing import Protocol
 
 from pyspark.sql import DataFrame
 
+from jobs.streaming.iceberg_bronze import (
+    CANONICAL_BRONZE_TABLE_NAME,
+    QUALITY_BRONZE_COLUMNS,
+)
 from jobs.streaming.iceberg_inspection import validate_table_identifier
 
 
 QUALITY_SMOKE_TABLE_NAME = "market_catalog.market.bronze_trades_quality_smoke"
-CANONICAL_BRONZE_TABLE_NAME = "market_catalog.market.bronze_trades"
 
-QUALITY_CONTRACT_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("exchange", "string"),
-    ("symbol", "string"),
-    ("trade_id", "string"),
-    ("price", "decimal(38,18)"),
-    ("quantity", "decimal(38,18)"),
-    ("event_time_ms", "bigint"),
-    ("ingested_at_ms", "bigint"),
-    ("kafka_key", "string"),
-    ("kafka_topic", "string"),
-    ("kafka_partition", "int"),
-    ("kafka_offset", "bigint"),
-    ("kafka_timestamp", "timestamp"),
-    ("raw_json", "string"),
-    ("is_valid", "boolean"),
-    ("validation_errors", "array<string>"),
-)
+# Compatibility alias retained for existing callers of this module.
+QUALITY_CONTRACT_COLUMNS = QUALITY_BRONZE_COLUMNS
 
 
 class SparkSqlExecutor(Protocol):
@@ -66,7 +54,8 @@ def quality_smoke_table_ddl(
     """Build the exact isolated 15-column Iceberg table definition."""
     table = validate_quality_smoke_table_name(table_name)
     definitions = ",\n".join(
-        f"{name} {sql_type.upper()}" for name, sql_type in QUALITY_CONTRACT_COLUMNS
+        f"{name} {sql_type.replace(' ', '').upper()}"
+        for name, sql_type in QUALITY_CONTRACT_COLUMNS
     )
     return (
         f"CREATE TABLE IF NOT EXISTS {table} (\n"

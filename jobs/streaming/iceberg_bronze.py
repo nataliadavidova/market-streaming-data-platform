@@ -8,6 +8,9 @@ class SparkSqlExecutor(Protocol):
         ...
 
 
+CANONICAL_BRONZE_TABLE_NAME = "market_catalog.market.bronze_trades"
+
+
 BRONZE_TRADE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("exchange", "STRING"),
     ("symbol", "STRING"),
@@ -22,6 +25,13 @@ BRONZE_TRADE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("kafka_offset", "BIGINT"),
     ("kafka_timestamp", "TIMESTAMP"),
     ("raw_json", "STRING"),
+)
+
+
+QUALITY_BRONZE_COLUMNS: tuple[tuple[str, str], ...] = (
+    *BRONZE_TRADE_COLUMNS,
+    ("is_valid", "BOOLEAN"),
+    ("validation_errors", "ARRAY<STRING>"),
 )
 
 

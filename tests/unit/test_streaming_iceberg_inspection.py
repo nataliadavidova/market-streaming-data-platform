@@ -2,7 +2,9 @@
 
 import pytest
 
+from jobs.streaming.iceberg_bronze import CANONICAL_BRONZE_TABLE_NAME
 from jobs.streaming.iceberg_inspection import (
+    DEFAULT_TABLE,
     IcebergInspectionError,
     build_inspection_queries,
     inspect_iceberg_table,
@@ -94,7 +96,8 @@ def test_validate_table_identifier_rejects_injection_like_values(
 
 def test_parse_args_uses_canonical_environment_default() -> None:
     args = parse_args([], environ={})
-    assert args.table == "market_catalog.market.bronze_trades"
+    assert DEFAULT_TABLE == CANONICAL_BRONZE_TABLE_NAME
+    assert args.table == CANONICAL_BRONZE_TABLE_NAME
     assert args.max_rows == 100
 
 

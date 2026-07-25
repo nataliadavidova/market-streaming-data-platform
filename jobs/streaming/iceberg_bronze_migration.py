@@ -10,7 +10,11 @@ from enum import Enum
 import re
 from typing import Protocol
 
-from jobs.streaming.iceberg_bronze import BRONZE_TRADE_COLUMNS
+from jobs.streaming.iceberg_bronze import (
+    BRONZE_TRADE_COLUMNS,
+    CANONICAL_BRONZE_TABLE_NAME,
+    QUALITY_BRONZE_COLUMNS,
+)
 from jobs.streaming.iceberg_inspection import (
     IcebergInspectionError,
     validate_table_identifier,
@@ -18,15 +22,6 @@ from jobs.streaming.iceberg_inspection import (
 from jobs.streaming.iceberg_trade_streaming_job import (
     build_iceberg_trade_spark_session,
     parse_args as parse_streaming_args,
-)
-
-
-CANONICAL_BRONZE_TABLE_NAME = "market_catalog.market.bronze_trades"
-
-QUALITY_BRONZE_COLUMNS: tuple[tuple[str, str], ...] = (
-    *BRONZE_TRADE_COLUMNS,
-    ("is_valid", "BOOLEAN"),
-    ("validation_errors", "ARRAY<STRING>"),
 )
 
 

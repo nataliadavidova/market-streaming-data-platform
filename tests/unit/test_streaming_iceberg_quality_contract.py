@@ -17,6 +17,10 @@ from pyspark.sql.types import (
 )
 
 from jobs.streaming.bronze_quality import classify_raw_trade_kafka_messages
+from jobs.streaming.iceberg_bronze import (
+    CANONICAL_BRONZE_TABLE_NAME as SHARED_CANONICAL_BRONZE_TABLE_NAME,
+    QUALITY_BRONZE_COLUMNS,
+)
 from jobs.streaming.iceberg_quality_contract import (
     CANONICAL_BRONZE_TABLE_NAME,
     IcebergQualityContractError,
@@ -90,7 +94,15 @@ def expected_names() -> list[str]:
 
 
 def expected_types() -> list[str]:
-    return [data_type for _, data_type in QUALITY_CONTRACT_COLUMNS]
+    return [
+        data_type.replace(" ", "").lower()
+        for _, data_type in QUALITY_CONTRACT_COLUMNS
+    ]
+
+
+def test_quality_contract_uses_shared_bronze_contract() -> None:
+    assert CANONICAL_BRONZE_TABLE_NAME == SHARED_CANONICAL_BRONZE_TABLE_NAME
+    assert QUALITY_CONTRACT_COLUMNS is QUALITY_BRONZE_COLUMNS
 
 
 def test_quality_smoke_table_identifier_is_fixed() -> None:

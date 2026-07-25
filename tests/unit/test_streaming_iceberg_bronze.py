@@ -1,6 +1,9 @@
 """Unit tests for the Bronze Iceberg trade table contract."""
 
 from jobs.streaming.iceberg_bronze import (
+    BRONZE_TRADE_COLUMNS,
+    CANONICAL_BRONZE_TABLE_NAME,
+    QUALITY_BRONZE_COLUMNS,
     bronze_trade_namespace_ddl,
     bronze_trade_table_ddl,
     bronze_trade_table_name,
@@ -33,6 +36,17 @@ class RecordingSparkSqlExecutor:
     def sql(self, query: str) -> object:
         self.queries.append(query)
         return object()
+
+
+def test_bronze_contract_constants_are_canonical_and_composed() -> None:
+    assert CANONICAL_BRONZE_TABLE_NAME == "market_catalog.market.bronze_trades"
+    assert len(BRONZE_TRADE_COLUMNS) == 13
+    assert len(QUALITY_BRONZE_COLUMNS) == 15
+    assert QUALITY_BRONZE_COLUMNS[:13] == BRONZE_TRADE_COLUMNS
+    assert QUALITY_BRONZE_COLUMNS[-2:] == (
+        ("is_valid", "BOOLEAN"),
+        ("validation_errors", "ARRAY<STRING>"),
+    )
 
 
 def test_bronze_trade_table_name_returns_full_name() -> None:

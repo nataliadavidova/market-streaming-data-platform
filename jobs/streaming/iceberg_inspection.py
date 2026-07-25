@@ -9,9 +9,11 @@ from jobs.streaming.iceberg_trade_streaming_job import (
     build_iceberg_trade_spark_session,
     parse_args as parse_streaming_args,
 )
+from jobs.streaming.iceberg_bronze import CANONICAL_BRONZE_TABLE_NAME
 
 
-DEFAULT_TABLE = "market_catalog.market.bronze_trades"
+# Compatibility alias retained for the inspector CLI and existing callers.
+DEFAULT_TABLE = CANONICAL_BRONZE_TABLE_NAME
 DEFAULT_MAX_ROWS = 100
 
 

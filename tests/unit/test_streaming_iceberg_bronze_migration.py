@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 import jobs.streaming.iceberg_bronze_migration as migration
-from jobs.streaming.iceberg_bronze import BRONZE_TRADE_COLUMNS
+from jobs.streaming.iceberg_bronze import (
+    BRONZE_TRADE_COLUMNS,
+    CANONICAL_BRONZE_TABLE_NAME as SHARED_CANONICAL_BRONZE_TABLE_NAME,
+    QUALITY_BRONZE_COLUMNS as SHARED_QUALITY_BRONZE_COLUMNS,
+)
 from jobs.streaming.iceberg_bronze_migration import (
     BronzeMigrationResult,
     BronzeSchemaState,
@@ -59,6 +63,8 @@ def test_canonical_identifier_is_exact() -> None:
     assert validate_bronze_table_name(CANONICAL_BRONZE_TABLE_NAME) == (
         CANONICAL_BRONZE_TABLE_NAME
     )
+    assert CANONICAL_BRONZE_TABLE_NAME == SHARED_CANONICAL_BRONZE_TABLE_NAME
+    assert QUALITY_BRONZE_COLUMNS is SHARED_QUALITY_BRONZE_COLUMNS
 
 
 @pytest.mark.parametrize(
