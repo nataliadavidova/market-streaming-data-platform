@@ -12,7 +12,7 @@ The project remains in the Version 1 bootstrap phase, but the first live ingesti
 
 Current verified ingestion flow:
 
-`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> canonical 15-column Iceberg Bronze table -> Parquet/metadata in MinIO`
+`Binance combined BTCUSDT/ETHUSDT/SOLUSDT stream -> producer normalization to TradeEvent -> persistent Kafka -> Spark quality-v2 classifier -> canonical 15-column Iceberg Bronze table -> Parquet/metadata in MinIO`
 
 Spark processing progress is persisted separately:
 
@@ -57,7 +57,7 @@ named volume kafka_data -> /var/lib/kafka/data
 
 The configured log directory, runtime log directory, and named-volume destination are the same. Ordinary `docker compose down` removes the Kafka container but does not remove this named volume, so the normal `down -> up` lifecycle preserves local topics, offsets, and records. This is local persistence evidence only; it does not provide replication, disaster recovery, or multi-broker fault tolerance.
 
-The prior misconfiguration mounted `/var/lib/kafka/data` while Kafka wrote to container-local `/tmp/kafka-logs`; the old log was not recoverable. The quality-v1 Spark checkpoint remains a separate preserved state and must not be reused with a newly created Kafka timeline. Future Kafka timeline changes require a new versioned checkpoint/query epoch such as quality-v2.
+The prior misconfiguration mounted `/var/lib/kafka/data` while Kafka wrote to container-local `/tmp/kafka-logs`; the old log was not recoverable. The legacy and quality-v1 Spark checkpoints remain separate preserved states and are not reused by the current quality-v2 Kafka timeline.
 
 ## Currently Implemented Foundation
 
@@ -127,7 +127,7 @@ The earlier isolated persisted-contract path remains separate from the current l
 
 Current live path:
 
-`Kafka -> Bronze quality classifier -> market_catalog.market.bronze_trades -> quality-v1 checkpoint`
+`Kafka -> Bronze quality classifier -> market_catalog.market.bronze_trades -> quality-v2 checkpoint`
 
 Non-persisted classifier path:
 
@@ -168,11 +168,11 @@ It changes Iceberg table metadata without rewriting the existing data file. Exis
 
 The current live path is:
 
-`Kafka -> classify_raw_trade_kafka_messages(...) -> 15-column DataFrame -> market_catalog.market.bronze_trades -> s3a://market-lake/checkpoints/market/bronze-trades-quality-v1`
+`Kafka -> classify_raw_trade_kafka_messages(...) -> 15-column DataFrame -> market_catalog.market.bronze_trades -> s3a://market-lake/checkpoints/market/bronze-trades-quality-v2`
 
-Before creating the Kafka stream, the job validates the canonical identifier and requires `QUALITY_15_COLUMN`; legacy or incompatible schemas fail without automatic DDL. The first start explicitly requests Kafka `startingOffsets=latest`. Once checkpoint progress exists, restart resumes from that checkpoint. The query name is `market-iceberg-bronze-trades-quality-v1`.
+Before creating the Kafka stream, the job validates the canonical identifier and requires `QUALITY_15_COLUMN`; legacy or incompatible schemas fail without automatic DDL. The first start explicitly requests Kafka `startingOffsets=latest`. Once checkpoint progress exists, restart resumes from that checkpoint. The query name is `market-iceberg-bronze-trades-quality-v2`.
 
-The old checkpoint was not reused, migrated, or deleted and is explicitly rejected by the quality job. Iceberg schema evolution and Spark checkpoint state remain independent contracts. The controlled restart observed offsets `0..4` appended once, but it does not establish universal exactly-once behavior or compatibility with the legacy writer.
+The legacy and quality-v1 checkpoints were not reused, migrated, or deleted and are explicitly rejected by the quality-v2 job. Iceberg schema evolution and Spark checkpoint state remain independent contracts. The controlled real Binance run appended 182 valid rows across the three configured symbols, and Kafka topic identity and offsets survived one ordinary `down -> up` lifecycle. This does not establish universal exactly-once behavior, replay support, or multi-broker durability.
 
 Implemented executable producer flow:
 

@@ -109,7 +109,7 @@ Without an override, the producer uses `kafka.raw_topic` from `config/market_sym
 
 Local Kafka stores broker state in the named Compose volume `kafka_data`, mounted at `/var/lib/kafka/data` with `KAFKA_LOG_DIRS=/var/lib/kafka/data`. The ordinary `make kafka-down` -> `make kafka-up` lifecycle therefore preserves local topics, offsets, and records. This is local single-broker persistence, not replication or disaster recovery.
 
-The previous configuration left Kafka state in container-local `/tmp/kafka-logs`; that old log was not recoverable. The quality-v1 Spark checkpoint remains preserved and must not be reused with a newly created Kafka timeline. A future Kafka reset or cutover should use a new versioned checkpoint/query epoch such as quality-v2.
+The previous configuration left Kafka state in container-local `/tmp/kafka-logs`; that old log was not recoverable. The legacy and quality-v1 Spark checkpoints remain preserved and are not reused by the current quality-v2 Kafka timeline.
 
 ## Running Spark -> Iceberg
 
@@ -121,9 +121,9 @@ make iceberg-trade-stream
 
 The target runs:
 
-`Kafka source -> Bronze quality classifier -> canonical 15-column Iceberg table -> quality-v1 S3A checkpoint`
+`Binance BTCUSDT/ETHUSDT/SOLUSDT -> Kafka -> Bronze quality classifier -> canonical 15-column Iceberg table -> quality-v2 S3A checkpoint`
 
-Before reading Kafka or starting the query, the job requires the exact canonical 15-column schema. Its first start explicitly uses Kafka `startingOffsets=latest`; subsequent starts resume from `s3a://market-lake/checkpoints/market/bronze-trades-quality-v1`. The legacy checkpoint is retained but rejected by the quality job.
+Before reading Kafka or starting the query, the job requires the exact canonical 15-column schema. Its first start explicitly uses Kafka `startingOffsets=latest`; subsequent starts resume from `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2`. The legacy and quality-v1 checkpoints are retained but rejected by the quality-v2 job.
 
 Deployment values are supplied through the existing environment contract. See [.env.example](.env.example) for the Kafka, Iceberg REST catalog, MinIO/S3, table, checkpoint, query-name, and application-name groups.
 
@@ -166,7 +166,9 @@ make iceberg-down
 
 The migration targets only `market_catalog.market.bronze_trades`. It recognizes `LEGACY_13_COLUMN`, `QUALITY_15_COLUMN`, and `INCOMPATIBLE` states; runs one additive `ALTER TABLE` only for the exact legacy schema; validates the final 15-column schema; and never drops, recreates, overwrites, truncates, or backfills rows. A second run reports `ALREADY_MIGRATED` without another ALTER. See the [Bronze quality migration runbook](docs/runbooks/bronze-quality-migration.md).
 
-The canonical table and live writer now share the exact 15-column quality contract. The live job uses the versioned `quality-v1` checkpoint and query name; it does not reuse or delete the legacy checkpoint.
+The canonical table and live writer now share the exact 15-column quality contract. The live job uses the versioned `quality-v2` checkpoint and query name; it does not reuse or delete either historical checkpoint.
+
+The local streaming MVP has completed a controlled real Binance smoke across BTCUSDT, ETHUSDT, and SOLUSDT. See the [Bronze quality migration and live cutover runbook](docs/runbooks/bronze-quality-migration.md) for observed counts and boundaries. Silver, ClickHouse, and dashboard work remain next.
 
 ## Shutdown behavior
 

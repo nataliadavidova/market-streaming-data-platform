@@ -73,7 +73,7 @@ Add Terraform, cloud resources, deployment strategy, and optional Kubernetes.
 
 ## Current project state
 
-The latest completed storage milestone is the canonical Bronze live quality integration. Kafka rows now pass through the Bronze quality classifier and persist to the canonical 15-column Iceberg table with a versioned checkpoint.
+The latest completed storage milestone is the Bronze quality-v2 real Binance integration. Kafka rows now pass through the Bronze quality classifier and persist to the canonical 15-column Iceberg table with the quality-v2 checkpoint.
 
 Current Python package:
 
@@ -97,7 +97,7 @@ The Bronze quality classifier is implemented in `jobs.streaming.bronze_quality`.
 
 The isolated persisted Bronze quality contract is implemented in `jobs.streaming.iceberg_quality_contract`. It accepts the classifier's exact 15-column output, validates the isolated table schema and incoming DataFrame schema, and performs a static Iceberg append to `market_catalog.market.bronze_trades_quality_smoke`. The canonical table is explicitly rejected; no streaming query, checkpoint, or live write path is involved.
 
-The canonical migration remains explicit through `make iceberg-migrate-bronze-quality`. The live job does not run DDL: it requires `QUALITY_15_COLUMN` before building the Kafka source, uses `s3a://market-lake/checkpoints/market/bronze-trades-quality-v1`, and rejects the exact legacy checkpoint. The legacy checkpoint remains untouched.
+The canonical migration remains explicit through `make iceberg-migrate-bronze-quality`. The live job does not run DDL: it requires `QUALITY_15_COLUMN` before building the Kafka source, uses `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2`, and rejects both historical checkpoints. Neither historical checkpoint is modified.
 
 Current local service config:
 
@@ -112,6 +112,12 @@ Latest repository state:
 - Kafka persistence implementation commit: `d5fe96f Persist Kafka broker state`.
 - Kafka persistence validation: focused configuration tests 4 passed, full suite 302 passed, Compose config and diff checks passed. Probe topic `market.kafka.persistence.probe.v2` retained TopicId `F-WKZJefSoClnDoU6F9JRw`, partition 0 offset `0:1`, and message `persistence-probe-v2` across two ordinary Kafka `down -> up` cycles.
 - The quality-v1 checkpoint remains preserved and must not be reused with a newly created Kafka timeline; future reset/cutover work should use a new versioned checkpoint/query epoch such as quality-v2.
+
+- Bronze quality-v2 implementation commit: `9b4518a Start Bronze quality v2 epoch`.
+- Focused validation: 62 tests passed; full suite 304 passed; Compose and diff checks passed.
+- Controlled real Binance smoke used BTCUSDT, ETHUSDT, and SOLUSDT and appended 182 valid rows (162/13/7 by symbol) to canonical Bronze. The persistent Kafka topic retained its identity and offsets through one ordinary `down -> up` cycle.
+- Current quality-v2 checkpoint/query: `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2` / `market-iceberg-bronze-trades-quality-v2`.
+- Next milestone: minimal Silver -> ClickHouse -> mini-dashboard.
 
 - Live quality integration commit: `c4228ff Connect Bronze quality live stream`.
 - Focused validation: Kafka source 2 passed, S3A checkpoint 7 passed, streaming job 51 passed, and Bronze classifier 19 passed.
@@ -182,7 +188,7 @@ Spark/Iceberg contract:
 - Graceful Spark shutdown uses a shutdown event, timed `awaitTermination` polling, `query.stop()` before `spark.stop()`, and handler restoration after cleanup.
 - `jobs/streaming/iceberg_inspection.py` provides a bounded, read-only table inspection CLI. It validates safe dotted identifiers, uses the existing Iceberg-enabled Spark configuration, and stops its owned Spark session while preserving inspection errors when cleanup also fails.
 - `jobs/streaming/iceberg_bronze_migration.py` provides the explicit canonical migration CLI. It owns only its migration Spark session and does not connect the classifier or streaming job.
-- The canonical live job uses query name `market-iceberg-bronze-trades-quality-v1` and checkpoint `s3a://market-lake/checkpoints/market/bronze-trades-quality-v1`. The legacy checkpoint constant is retained only for compatibility and is rejected by this job.
+- The canonical live job uses query name `market-iceberg-bronze-trades-quality-v2` and checkpoint `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2`. Legacy and quality-v1 checkpoint constants remain available only for compatibility and are rejected by this job.
 
 Known limitations and backlog:
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This runbook covers the explicit Iceberg schema migration and the subsequent quality-v1 streaming cutover for:
+This runbook covers the explicit Iceberg schema migration and the subsequent quality-v2 streaming cutover for:
 
 ```text
 market_catalog.market.bronze_trades
@@ -54,12 +54,12 @@ The live job uses:
 
 ```text
 table: market_catalog.market.bronze_trades
-checkpoint: s3a://market-lake/checkpoints/market/bronze-trades-quality-v1
-query name: market-iceberg-bronze-trades-quality-v1
+checkpoint: s3a://market-lake/checkpoints/market/bronze-trades-quality-v2
+query name: market-iceberg-bronze-trades-quality-v2
 first-start startingOffsets: latest
 ```
 
-`startingOffsets=latest` applies when the new checkpoint has no progress. Restarts resume from the saved quality-v1 checkpoint.
+`startingOffsets=latest` applies when the new checkpoint has no progress. Restarts resume from the saved quality-v2 checkpoint. The legacy and quality-v1 checkpoints remain preserved and are not reused.
 
 ## State behavior
 
@@ -123,13 +123,13 @@ The migration command:
 - does not drop, recreate, overwrite, or truncate the table;
 - does not roll back automatically.
 
-The quality-v1 streaming job:
+The quality-v2 streaming job:
 
 - requires the exact `QUALITY_15_COLUMN` state before constructing the Kafka source;
 - does not run `ALTER TABLE`;
 - classifies every Kafka input row without filtering;
 - uses the existing append sink;
-- rejects the exact legacy checkpoint;
+- rejects both the legacy and quality-v1 checkpoints;
 - does not delete, copy, reset, or migrate any checkpoint.
 
 Do not run an older 13-column application version against the migrated table. Compatibility with the legacy writer is not established.
@@ -197,7 +197,7 @@ snapshots/history: 1/1 -> 3/3
 data files: 1 -> 2
 ```
 
-The job was stopped and restarted with the same quality-v1 checkpoint:
+The earlier controlled quality-v1 job was stopped and restarted with the same quality-v1 checkpoint:
 
 ```text
 restart:
@@ -214,4 +214,20 @@ All observed identities used topic `market.trades.raw`, partition 0, offsets `0.
 
 Terminal interruption caused the `make` wrapper to return exit code 130. Spark separately logged successful query/context cleanup and process cleanup with exit code 0, and final `docker compose ps` was empty. Code 130 is not a successful application exit, but it was not a data-processing failure in this controlled run.
 
-The old checkpoint remains untouched and must not be reused for the quality-v1 query. No historical backfill, checkpoint deletion, replay control, deduplication, monitoring, Silver transformation, rejected-record table, or production deployment is included.
+The old checkpoints remain untouched and must not be reused for the quality-v2 query. No historical backfill, checkpoint deletion, replay control, deduplication, monitoring, Silver transformation, rejected-record table, or production deployment is included.
+
+## Real Binance quality-v2 smoke
+
+The completed local MVP smoke used the documented combined Binance stream for `BTCUSDT`, `ETHUSDT`, and `SOLUSDT`, the production producer, persistent Kafka, Spark quality-v2, Iceberg REST, and MinIO. It appended 182 real rows to canonical Bronze:
+
+```text
+BTCUSDT: 162
+ETHUSDT: 13
+SOLUSDT: 7
+```
+
+All observed rows had positive trade values, populated event/ingestion and Kafka audit fields, `is_valid = true`, empty `validation_errors`, unique topic/partition/offset coordinates, and normalized internal `TradeEvent` JSON in `raw_json`. The table ended at 15 columns, 188 rows, 30 snapshots/history entries, and 28 data files.
+
+Kafka `market.trades.raw` retained its TopicId and end offset `182`, and records remained readable after one ordinary `make kafka-down` -> `make kafka-up` cycle using the named broker volume. Producer and Spark were stopped cleanly; a terminal wrapper interruption may report exit 130 even when Spark cleanup exits 0. This is controlled local evidence, not a universal exactly-once, replay, disaster-recovery, or multi-broker durability guarantee.
+
+The next milestone is minimal Silver -> ClickHouse -> mini-dashboard.

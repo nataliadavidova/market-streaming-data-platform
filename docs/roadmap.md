@@ -44,8 +44,9 @@ Completed:
 - Isolated persisted Bronze quality contract (`63f910c Add isolated Bronze quality contract`): the exact 15-column schema is validated and statically appended to `market_catalog.market.bronze_trades_quality_smoke`; canonical-table targeting is rejected, and no live stream or checkpoint is involved.
 - Canonical Bronze quality-schema migration (`f698e3d Add canonical Bronze quality migration`): exact 13- and 15-column schema states are detected, incompatible schemas are rejected, one additive `ALTER TABLE` is validated, and a second run is idempotent. The migration tests passed 28, existing Bronze tests passed 5, and the full suite passed 287.
 - Controlled canonical migration smoke passed with Spark 4.1.2, Iceberg 1.11.0, REST catalog, and MinIO. The table moved from 13 to 15 columns while its one row, one snapshot/history entry, latest snapshot `8232280423536300118`, one data file/path, and location remained unchanged. The historical quality fields are `NULL / NULL` (“not evaluated under the quality contract”). No backfill, live stream, Kafka, producer, or checkpoint operation occurred.
-- Canonical Bronze live quality integration (`c4228ff Connect Bronze quality live stream`): the live job requires the exact 15-column schema, uses `classify_raw_trade_kafka_messages(...)`, writes through the existing append sink, and uses the versioned quality-v1 checkpoint and query name with explicit first-start `startingOffsets=latest`.
+- Canonical Bronze live quality integration (`c4228ff Connect Bronze quality live stream`): the live job requires the exact 15-column schema, uses `classify_raw_trade_kafka_messages(...)`, writes through the existing append sink, and uses a versioned checkpoint with explicit first-start `startingOffsets=latest`.
 - Live quality validation passed with 298 tests plus controlled initial-start and restart smokes. In the observed run, Kafka partition 0 offsets `0..4` were appended once across the two starts with valid, `MALFORMED_JSON`, `INVALID_PRICE`, and `INVALID_QUANTITY` outcomes.
+- Local streaming MVP completed (`9b4518a Start Bronze quality v2 epoch`): 304 tests passed, and a controlled real Binance combined stream for BTCUSDT, ETHUSDT, and SOLUSDT appended 182 valid records to canonical Bronze (162/13/7 by symbol). The quality-v2 checkpoint/query is `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2` / `market-iceberg-bronze-trades-quality-v2`.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific Hadoop S3A checkpoint configuration.
 - Read-only Iceberg inspection workflow (`2d6ec09 Add Iceberg inspection workflow`) covering table identity, schema, row count, snapshots, history, data files, and partition metadata through `make iceberg-inspect`.
@@ -90,6 +91,10 @@ Planned:
 - Iceberg storage monitoring, maintenance, compaction, and schema-evolution work.
 - ClickHouse aggregate writes.
 - Dashboard or analytical SQL layer.
+
+Next active milestone:
+
+- Minimal Silver -> ClickHouse -> mini-dashboard.
 
 ## Version 2: CDC + Greenplum MVP
 
