@@ -73,7 +73,7 @@ Add Terraform, cloud resources, deployment strategy, and optional Kubernetes.
 
 ## Current project state
 
-The latest completed milestone is live Binance → Kafka → Spark → Iceberg ingestion with S3A checkpoint evidence.
+The latest completed live-ingestion milestone is Binance → Kafka → Spark → Iceberg with S3A checkpoint evidence; the newest storage milestone is the isolated persisted Bronze quality contract.
 
 Current Python package:
 
@@ -95,6 +95,8 @@ The read-only Iceberg inspection workflow is implemented through `make iceberg-i
 
 The non-persisted Bronze quality classifier is implemented in `jobs.streaming.bronze_quality`. It preserves each raw Kafka-like row and its audit fields, safely classifies JSON, identity, decimal, timestamp, and Kafka-coordinate issues with `is_valid` and ordered `validation_errors`, but it is not connected to the Iceberg sink or production streaming path.
 
+The isolated persisted Bronze quality contract is implemented in `jobs.streaming.iceberg_quality_contract`. It accepts the classifier's exact 15-column output, validates the isolated table schema and incoming DataFrame schema, and performs a static Iceberg append to `market_catalog.market.bronze_trades_quality_smoke`. The canonical table is explicitly rejected; no streaming query, checkpoint, or live write path is involved.
+
 Current local service config:
 
 - `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
@@ -108,12 +110,17 @@ Latest repository state:
 - Iceberg inspection implementation commit: `2d6ec09 Add Iceberg inspection workflow`.
 - Delivery-result observation commit: `52124a8 Observe Kafka delivery results`.
 - Bronze quality classification commit: `fba550e Add Bronze quality classification`.
+- Isolated persisted Bronze quality contract commit: `63f910c Add isolated Bronze quality contract`.
 - Reconnect implementation commit: `89ec8dd Add Binance producer reconnect`.
 - Focused reconnect lifecycle tests: 19 passed in `test_binance_publisher.py`.
 - Focused Iceberg inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`.
 - Focused Bronze quality tests: 19 passed in `tests/unit/test_streaming_bronze_quality.py`.
 - Existing trade parser tests: 2 passed in `tests/unit/test_streaming_trades.py`.
-- Full suite: 241 passed.
+- Full suite at the previous quality milestone: 241 passed.
+- Isolated quality-contract tests: 18 passed in `tests/unit/test_streaming_iceberg_quality_contract.py`.
+- Full suite after the isolated contract: 259 passed.
+
+The controlled persisted quality-contract smoke passed with Spark 4.1.2, Iceberg 1.11.0, the Iceberg REST catalog, and MinIO. The isolated table was `market_catalog.market.bronze_trades_quality_smoke` at `s3://market-lake/warehouse/market/bronze_trades_quality_smoke`; it had 15 columns, 3 rows, 1 snapshot, and 3 data files. Outcomes were one valid row, one `MALFORMED_JSON` row, and one `INVALID_PRICE` row. The canonical `market_catalog.market.bronze_trades` remained at 13 columns, row count 1, snapshot count 1, latest snapshot `8232280423536300118`, and one data file before and after the smoke. The isolated table's catalog entry was dropped afterward; physical object purge was not separately proven, and services were stopped. No live stream or checkpoint was touched.
 
 Verified runtime evidence:
 
@@ -200,7 +207,8 @@ Other Markdown status:
 
 Next stage:
 
-- The non-persisted Bronze quality classification slice is complete. The next storage slice is persisted Bronze quality contract design: decide how `is_valid` and `validation_errors` should be stored and integrated without silently discarding raw evidence. Keep that work separate from Silver design and maintenance.
+- The non-persisted Bronze quality classification slice is complete; its earlier persisted-contract design guidance is now historical.
+- The isolated persisted Bronze quality contract slice is complete. The next storage slice is canonical Bronze quality migration: evolve the canonical table from 13 to 15 columns with explicit `ALTER TABLE`, connect the classifier to the live path, use a new versioned checkpoint rather than reusing the old 13-column checkpoint, and validate controlled start/restart behavior. Do not claim this migration is implemented.
 - Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and broader monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
@@ -258,7 +266,7 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-Reconnect, default-path delivery-result observation, reconnect lifecycle logging, read-only Iceberg inspection, and non-persisted Bronze quality classification are implemented and tested. The next storage slice is persisted Bronze quality contract design. Keep producer throughput/per-message flush and broader monitoring separate from that storage work.
+Reconnect, default-path delivery-result observation, reconnect lifecycle logging, read-only Iceberg inspection, non-persisted Bronze quality classification, and isolated persisted quality-contract validation are implemented and tested. The next storage slice is canonical Bronze quality migration. Keep producer throughput/per-message flush, broader monitoring, historical backfill, Silver, and maintenance separate from that storage work.
 
 ## Historical pre-52124a8 next step
 
@@ -270,5 +278,5 @@ Current test suite:
 - 2 existing trade parser tests pass in `tests/unit/test_streaming_trades.py`.
 - 20 focused Iceberg inspection tests pass in `tests/unit/test_streaming_iceberg_inspection.py`.
 - 19 focused reconnect lifecycle tests pass in `tests/unit/test_binance_publisher.py`.
-- 241 tests pass in the full suite.
+- 259 tests pass in the full suite after the isolated persisted contract.
 - Tests are not automatically rerun for documentation-only changes unless explicitly requested.

@@ -39,6 +39,7 @@ Current and planned technologies:
 - Spark Kafka source: implemented.
 - Spark typed Bronze parser: implemented.
 - Non-persisted Bronze quality classification: implemented and statically Spark-tested.
+- Isolated persisted Bronze quality contract: implemented and controlled-smoke tested.
 - Iceberg REST catalog and S3FileIO configuration: implemented.
 - Iceberg Bronze table: implemented.
 - Native Iceberg streaming sink: implemented.
@@ -72,6 +73,7 @@ Implemented foundation:
 - Default Kafka bootstrap behavior: `KAFKA_BOOTSTRAP_SERVERS`, falling back to `localhost:9092`.
 - Spark Structured Streaming Kafka source and typed Bronze parser.
 - Separate non-persisted Spark Bronze quality classifier that preserves each raw Kafka-like row, safely parses trade fields, and adds `is_valid` plus ordered `validation_errors` without changing the live Iceberg path.
+- Isolated persisted quality-contract helper: validates a classified 15-column DataFrame, creates or validates `market_catalog.market.bronze_trades_quality_smoke`, and performs a static Iceberg append. It rejects the canonical Bronze table, uses no checkpoint, and does not alter the live streaming path.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific S3A checkpoint configuration.
 - Graceful Spark signal handling with timed polling, `query.stop()` before `spark.stop()`, and restored signal handlers.
@@ -131,7 +133,17 @@ The inspector reads an existing table without creating or modifying it, starting
 
 ## Bronze quality classification
 
-A separate Spark transformation can accept raw Kafka-like records, preserve every row with its raw JSON and Kafka audit metadata, safely parse the trade fields, and attach `is_valid` and ordered `validation_errors` labels. It does not filter records, write to Iceberg, change the existing Bronze table, start a streaming query, or participate in the production storage path yet. The next step is to design and implement a persisted Bronze quality contract separately.
+A separate Spark transformation can accept raw Kafka-like records, preserve every row with its raw JSON and Kafka audit metadata, safely parse the trade fields, and attach `is_valid` and ordered `validation_errors` labels. It does not filter records, change the existing Bronze table, start a streaming query, or participate in the canonical production storage path. Its output can now be persisted only through the isolated contract described below.
+
+## Persisted Bronze quality contract
+
+The classifier can now be persisted through a strictly isolated static contract:
+
+`classified 15-column DataFrame -> exact schema validation -> static Iceberg append`
+
+The smoke table is `market_catalog.market.bronze_trades_quality_smoke`. It contains the existing 13 Bronze fields plus `is_valid` and `validation_errors`. The helper validates both the existing table schema and incoming DataFrame contract before appending, rejects the canonical table as a target, and uses no streaming query or checkpoint. The canonical live Bronze table and its write path remain unchanged.
+
+The next step is a separately reviewed canonical migration: evolve the canonical table with `ALTER TABLE`, connect the classifier to the live path, and use a new versioned checkpoint rather than reusing the current 13-column checkpoint.
 
 ## Shutdown behavior
 
@@ -233,7 +245,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 241 tests passed. Focused Bronze quality tests: 19 passed in `tests/unit/test_streaming_bronze_quality.py`; existing trade parser tests: 2 passed in `tests/unit/test_streaming_trades.py`. Focused inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`. Focused reconnect lifecycle tests remain 19 passed in `tests/unit/test_binance_publisher.py`.
+Latest verified suite: 259 tests passed. Focused isolated quality-contract tests: 18 passed in `tests/unit/test_streaming_iceberg_quality_contract.py`; focused Bronze quality tests: 19 passed in `tests/unit/test_streaming_bronze_quality.py`; existing trade parser tests: 2 passed in `tests/unit/test_streaming_trades.py`. Focused inspection tests: 20 passed in `tests/unit/test_streaming_iceberg_inspection.py`. Focused reconnect lifecycle tests remain 19 passed in `tests/unit/test_binance_publisher.py`.
 
 ## Manual smoke checks
 
@@ -256,7 +268,8 @@ The broader Binance -> Kafka -> Spark -> Iceberg and checkpoint-recovery results
 - The producer still performs synchronous per-message `flush()` with no explicit timeout, which limits batching and throughput; its return value is not yet used as a queue policy.
 - `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.
 - There is no general end-to-end exactly-once guarantee.
-- The Bronze quality classifier is non-persisted and is not connected to the current Iceberg sink; a persisted quality contract has not been designed or implemented.
+- The Bronze quality classifier is not connected to the canonical Iceberg sink. Its 15-column persistence is proven only on the isolated smoke table; canonical schema evolution, live integration, and new-checkpoint validation remain pending.
+- The isolated quality smoke produced three rows and three data files. This is controlled contract evidence, not a compaction or file-layout guarantee; physical object purge after catalog cleanup was not separately proven.
 - Business-key deduplication is not implemented.
 - Monitoring, polling, batching, backpressure, replay, and backfill remain future work.
 - SIGKILL and arbitrary crash-timing safety are not proven.

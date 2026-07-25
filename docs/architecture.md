@@ -106,7 +106,33 @@ It preserves one output row for every input row, including `raw_json`, `kafka_ke
 
 Decimal fields use Spark's `try_cast` to `DECIMAL(38,18)`. Under the effective ANSI setting, an invalid decimal becomes null and receives `INVALID_PRICE` or `INVALID_QUANTITY`; global `spark.sql.ansi.enabled` is not changed. This is distinct from an ordinary ANSI cast that may fail the job.
 
-This classifier exists and is tested, but it is not connected to `iceberg_trade_streaming_job.py`, `start_bronze_trade_stream(...)`, the current Bronze Iceberg schema, or the checkpointed write path. Persisting these labels requires a separate quality-contract design covering schema evolution or an isolated storage strategy and a controlled runtime validation. It does not provide deduplication, monitoring, quarantine, Silver transformations, or exactly-once behavior.
+This classifier exists and is tested, but it is not connected to `iceberg_trade_streaming_job.py`, `start_bronze_trade_stream(...)`, the current Bronze Iceberg schema, or the checkpointed write path. Its labels are now proven in an isolated persisted contract, while canonical migration and live integration remain separate work. It does not provide deduplication, monitoring, quarantine, Silver transformations, or exactly-once behavior.
+
+## Isolated persisted Bronze quality-contract boundary
+
+The persisted contract is deliberately separate from the current live path:
+
+Current live path:
+
+`Kafka -> existing 13-column parser -> market_catalog.market.bronze_trades -> current checkpoint`
+
+Non-persisted classifier path:
+
+`raw Kafka-like DataFrame -> Bronze quality classifier -> 15-column classified DataFrame`
+
+Isolated persisted path:
+
+`15-column classified DataFrame -> exact contract validation -> static writeTo(...).append() -> market_catalog.market.bronze_trades_quality_smoke`
+
+The isolated table contains the existing 13 Bronze fields plus `is_valid BOOLEAN` and `validation_errors ARRAY<STRING>`. The helper rejects the canonical table identifier, creates only the fixed smoke table with `CREATE TABLE IF NOT EXISTS`, validates an existing table through `DESCRIBE TABLE`, validates incoming column names, order, and types, and performs a static append. No streaming writer, Kafka read, checkpoint, filtering, deduplication, or schema merge is involved.
+
+The controlled Spark 4.1.2 / Iceberg 1.11.0 / REST catalog / MinIO smoke persisted three rows and three data files in one snapshot: one valid row, one `MALFORMED_JSON` row, and one `INVALID_PRICE` row. The canonical table remained 13 columns with row count 1, one snapshot, latest snapshot `8232280423536300118`, and one data file before and after the smoke. The isolated catalog entry was dropped afterward; physical object purge was not separately proven.
+
+This proves persistence of the 15-column contract on an isolated table, not live streaming cutover or compatibility with the existing 13-column checkpoint. The agreed next migration is:
+
+`ALTER canonical table 13 -> 15 columns -> connect classifier to live path -> use a new versioned checkpoint`
+
+Table schema evolution and Spark checkpoint strategy are separate concerns; the old checkpoint will not be reused for the migrated query.
 
 Implemented executable producer flow:
 

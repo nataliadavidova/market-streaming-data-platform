@@ -40,11 +40,13 @@ Completed:
 - Successful bounded live graceful-finalization smoke-check confirming fresh Binance-to-Kafka delivery, producer exit status `0`, and no cancellation or `KeyboardInterrupt` traceback.
 - Spark Kafka source and typed Bronze parser.
 - Explicit non-persisted Bronze quality classification (`fba550e Add Bronze quality classification`): every input row is preserved, raw and Kafka audit evidence remains available, malformed JSON is classified, invalid decimals are safely handled with `try_cast`, and ordered `validation_errors` plus `is_valid` are produced without changing the write path.
+- Isolated persisted Bronze quality contract (`63f910c Add isolated Bronze quality contract`): the exact 15-column schema is validated and statically appended to `market_catalog.market.bronze_trades_quality_smoke`; canonical-table targeting is rejected, and no live stream or checkpoint is involved.
 - Iceberg REST catalog, S3FileIO, Bronze table contract, and native Iceberg streaming sink.
 - Query-specific Hadoop S3A checkpoint configuration.
 - Read-only Iceberg inspection workflow (`2d6ec09 Add Iceberg inspection workflow`) covering table identity, schema, row count, snapshots, history, data files, and partition metadata through `make iceberg-inspect`.
 - Controlled Spark 4.1.2 / Iceberg 1.11.0 / Iceberg REST / MinIO inspection smoke, with 20 focused inspection tests and 222 tests in the full suite at that milestone.
-- Bronze quality classification evidence: 19 focused quality tests, 2 existing trade parser tests, 241 tests in the current full suite, and static Spark validation with `spark.sql.ansi.enabled=true`.
+- Bronze quality classification evidence: 19 focused quality tests, 2 existing trade parser tests, 241 tests at that milestone, and static Spark validation with `spark.sql.ansi.enabled=true`.
+- Persisted quality-contract evidence: 18 focused tests, 19 classifier tests, 259 tests in the full suite, and a controlled Spark 4.1.2 / Iceberg 1.11.0 / REST catalog / MinIO smoke with 3 classified rows, 1 snapshot, 3 data files, one valid result, one `MALFORMED_JSON` result, and one `INVALID_PRICE` result. The canonical 13-column table was unchanged before and after; the isolated catalog entry was dropped afterward, while physical object purge was not separately proven.
 - Dedicated Kafka → Spark → Iceberg smoke with checkpoint progress and recovery verification.
 - Graceful Spark SIGINT and SIGTERM shutdown with query-before-Spark cleanup order.
 - Graceful producer SIGINT and SIGTERM shutdown with bounded final Kafka flush.
@@ -66,7 +68,7 @@ In progress:
 
 Planned:
 
-- Persist Bronze quality labels safely: design and implement the persisted Bronze quality contract, including schema evolution or an isolated-table strategy, streaming integration, and a controlled runtime smoke. The current classifier remains non-persisted.
+- Migrate canonical Bronze to the persisted quality contract: explicitly `ALTER TABLE` from 13 to 15 columns, connect `classify_raw_trade_kafka_messages(...)` to the live path, use a new versioned checkpoint rather than the current 13-column checkpoint, and run controlled start/restart validation. This migration is not implemented.
 - Shutdown-latency investigation.
 - WebSocket close-timeout tuning or instrumentation.
 - Shutdown-stage timing.
