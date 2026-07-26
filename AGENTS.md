@@ -73,7 +73,7 @@ Add Terraform, cloud resources, deployment strategy, and optional Kubernetes.
 
 ## Current project state
 
-The latest completed storage milestone is the Bronze quality-v2 real Binance integration. Kafka rows now pass through the Bronze quality classifier and persist to the canonical 15-column Iceberg table with the quality-v2 checkpoint.
+The latest completed storage milestone is the deterministic Silver Iceberg layer. Valid Kafka rows pass through the Bronze quality classifier, persist to the canonical 15-column Bronze table, and are reproducibly rebuilt into `market_catalog.market.silver_trades`.
 
 Current Python package:
 
@@ -90,6 +90,8 @@ Current architecture boundaries:
 - Spark progress is stored through Hadoop S3A checkpoints.
 - MinIO stores Iceberg data, metadata, and checkpoint objects for local smoke runs.
 - Production Bronze must not be used for destructive smoke tests; use a dedicated topic, table, and checkpoint.
+- Silver reads only canonical `market_catalog.market.bronze_trades` with the exact quality 15-column schema, keeps `is_valid = true` rows only, and does not mutate, deduplicate, or infer a historical source epoch.
+- Silver uses Iceberg V2 `writeTo(...).using("iceberg").createOrReplace()` for bounded full replacement. `(topic, partition, offset)` is source/topic-epoch-local, so coordinate collisions are retained; future `source_epoch` is deferred to replay/deduplication work.
 
 The read-only Iceberg inspection workflow is implemented through `make iceberg-inspect` and `jobs.streaming.iceberg_inspection`. It reports existing Bronze table identity, schema, row count, snapshots, history, data files, and partition metadata without creating or mutating tables, starting a streaming query, or reading checkpoints.
 
@@ -117,7 +119,7 @@ Latest repository state:
 - Focused validation: 62 tests passed; full suite 304 passed; Compose and diff checks passed.
 - Controlled real Binance smoke used BTCUSDT, ETHUSDT, and SOLUSDT and appended 182 valid rows (162/13/7 by symbol) to canonical Bronze. The persistent Kafka topic retained its identity and offsets through one ordinary `down -> up` cycle.
 - Current quality-v2 checkpoint/query: `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2` / `market-iceberg-bronze-trades-quality-v2`.
-- Next milestone: minimal Silver -> ClickHouse -> mini-dashboard.
+- Silver milestone: 188 Bronze rows yielded 184 valid Silver rows; repeated unchanged builds matched complete row-multiset fingerprints. Focused Silver tests: 9; full suite: 313.
 
 - Live quality integration commit: `c4228ff Connect Bronze quality live stream`.
 - Focused validation: Kafka source 2 passed, S3A checkpoint 7 passed, streaming job 51 passed, and Bronze classifier 19 passed.
@@ -215,7 +217,7 @@ Other Markdown status:
 Next stage:
 
 - Canonical Bronze quality classification, schema migration, and live integration are complete in the tested local scope.
-- The immediate next task is to review and fast-forward merge this milestone. Keep historical backfill, replay, deduplication, Silver, monitoring, maintenance, and producer throughput work separate.
+- The immediate next task is ClickHouse serving as a reproducible copy of Silver. Keep historical backfill, replay, deduplication, monitoring, maintenance, and producer throughput work separate.
 - Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and broader monitoring; keep these reliability areas separate.
 - Do not combine those three reliability areas in one slice.
 
@@ -273,7 +275,7 @@ Python files should start with a short module-level docstring explaining what th
 
 ## Immediate next likely step
 
-Reconnect, delivery-result observation, Iceberg inspection, Bronze quality classification, canonical schema migration, and canonical live quality integration are implemented and tested. The immediate next action is milestone review and merge; keep producer throughput, monitoring, historical backfill, replay, deduplication, Silver, and maintenance separate.
+Reconnect, delivery-result observation, Iceberg inspection, Bronze quality classification, canonical schema migration, canonical live quality integration, and deterministic Silver are implemented and tested. The immediate next action is ClickHouse serving; keep producer throughput, monitoring, historical backfill, replay, deduplication, and maintenance separate.
 
 ## Historical pre-52124a8 next step
 

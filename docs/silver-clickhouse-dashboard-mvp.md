@@ -14,7 +14,7 @@ canonical Bronze Iceberg
 
 The design is for the existing real Binance symbols `BTCUSDT`, `ETHUSDT`, and `SOLUSDT`. It does not change the live Bronze stream, Kafka, checkpoints, or the canonical Bronze contract.
 
-Repository discovery found no existing Silver job or table, ClickHouse service/table/client, JDBC path, Superset configuration, dashboard, or Iceberg batch-read job. The current repository provides the Bronze Iceberg table, Iceberg-enabled Spark configuration, read-only inspector, Makefile service workflows, and deterministic Bronze tests; all serving components described here are new.
+The deterministic Silver job and unit tests are implemented. ClickHouse service/table/client, JDBC path, Superset configuration, dashboard, and a bounded ClickHouse loader remain future work.
 
 ## 2. Dashboard questions and metric contracts
 
@@ -106,13 +106,19 @@ canonical Bronze
 → replace previous Silver state
 ```
 
-The implementation must validate the exact Iceberg replacement mechanism at runtime. Candidates are `INSERT OVERWRITE`, `CREATE OR REPLACE TABLE AS SELECT`, or a staging table followed by replacement. No mechanism is selected here without evidence that the project Spark/Iceberg runtime supports it. Two consecutive builds over unchanged Bronze must produce the same complete multiset of Silver rows, not merely the same row count or coordinate set. A deterministic row serialization plus SHA-256 and occurrence counts is suitable; process-random Python `hash()` is not.
+The implementation uses Iceberg V2 `DataFrameWriterV2`:
+
+```python
+silver_df.writeTo(silver_table).using("iceberg").createOrReplace()
+```
+
+Runtime validation established replacement/overwrite behavior rather than append. Repeated builds over unchanged Bronze produced 184 rows and matching complete SHA-256 row-multiset fingerprints, with no accumulated duplicate append. This documents the behavior demonstrated by the current Spark/Iceberg stack; it does not claim universal atomic replacement beyond that evidence. A deterministic row serialization plus SHA-256 and occurrence counts is suitable; process-random Python `hash()` is not.
 
 ### Transport identity and Kafka source epochs
 
 `(kafka_topic, kafka_partition, kafka_offset)` is unique only within one Kafka topic/source epoch. Recreated Kafka timelines can reuse a topic name and reset offsets. The preserved Bronze table contains valid rows from both the earlier quality-v1 timeline and the current persistent quality-v2 timeline, so reused coordinates are expected historical evidence rather than proof of duplicate trades.
 
-Silver preserves these coordinates for audit and local traceability, but the current contract does not treat them as a globally unique primary key. Rows must not be dropped solely because coordinates collide. A globally unique transport identity would require an additional `source_epoch` or topic-generation identifier; adding that field is deferred to replay/deduplication reliability work. No historical epoch is inferred from symbols, values, timestamps, snapshot order, or other heuristics.
+Silver preserves these coordinates for audit and local traceability, but the current contract does not treat them as a globally unique primary key. Quality-v1 and quality-v2 rows may reuse offsets; known collisions at offset 0 (BTCUSDT/SOLUSDT) and offset 3 (BTCUSDT/ETHUSDT) remain as distinct rows. Rows must not be dropped solely because coordinates collide. A globally unique transport identity would require an additional `source_epoch` or topic-generation identifier; adding that field is deferred to replay/deduplication reliability work. No historical epoch is inferred from symbols, values, timestamps, snapshot order, or other heuristics.
 
 ## 5. Serving alternatives
 

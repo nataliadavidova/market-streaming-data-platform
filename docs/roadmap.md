@@ -65,6 +65,7 @@ Completed:
 - Controlled two-session reconnect smoke with Kafka offsets `0` and `1`, successful SIGTERM cleanup, and no third session.
 - Reconnect lifecycle observability: incident-local attempt number, configured delay, retryable failure type, and monotonic disconnected duration through first successful recovery publication.
 - Controlled reconnect observability smoke confirming the lifecycle markers and approximately five-second recovery timing.
+- Deterministic Silver Iceberg (`97c7cc3 Build deterministic Silver trades`, `f230b3e Clarify Silver transport identity`): 184 valid rows from 188 Bronze rows, repeatable full rebuilds, exact decimal metrics, UTC millisecond timestamps, and 313 passing tests.
 - Focused unit coverage for bounded Kafka finalization.
 - Unit-test CI with GitHub Actions.
 
@@ -87,14 +88,13 @@ Planned:
 - Gap detection, backfill, and deduplication strategy.
 - Reconnect monitoring and alerting beyond the tested lifecycle logs.
 - Additional stream validation, normalization, and data-quality checks.
-- Silver transformation layer.
 - Iceberg storage monitoring, maintenance, compaction, and schema-evolution work.
 - ClickHouse aggregate writes.
 - Dashboard or analytical SQL layer.
 
 Next active milestone:
 
-- Minimal Silver -> ClickHouse -> mini-dashboard.
+- Silver Iceberg -> ClickHouse serving.
 
 ## Version 2: CDC + Greenplum MVP
 

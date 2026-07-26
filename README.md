@@ -6,9 +6,9 @@ The Version 1 target flow is:
 
 `Market API/WebSocket -> Kafka -> Spark Structured Streaming -> Iceberg on S3-compatible storage -> ClickHouse -> dashboard + basic DQ checks`
 
-The implemented ingestion path is now:
+The implemented analytical path is now:
 
-`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> 15-column Iceberg Bronze table -> Parquet/metadata in MinIO`
+`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> 15-column Iceberg Bronze table -> deterministic Silver Iceberg -> Parquet/metadata in MinIO`
 
 Spark Kafka progress is persisted separately through:
 
@@ -52,6 +52,7 @@ Current and planned technologies:
 - Producer graceful SIGTERM: live-tested.
 - Producer shutdown/final-flush INFO logging: implemented and live-tested.
 - Reconnect lifecycle observability: implemented and controlled-smoke tested.
+- Bronze Iceberg -> deterministic Silver Iceberg: implemented; Silver contains only valid trades and is reproducibly rebuilt.
 
 This is a verified ingestion milestone, not a claim that the whole Version 1 platform is complete.
 
@@ -168,7 +169,7 @@ The migration targets only `market_catalog.market.bronze_trades`. It recognizes 
 
 The canonical table and live writer now share the exact 15-column quality contract. The live job uses the versioned `quality-v2` checkpoint and query name; it does not reuse or delete either historical checkpoint.
 
-The local streaming MVP has completed a controlled real Binance smoke across BTCUSDT, ETHUSDT, and SOLUSDT. See the [Bronze quality migration and live cutover runbook](docs/runbooks/bronze-quality-migration.md) for observed counts and boundaries. Silver, ClickHouse, and dashboard work remain next.
+The local streaming MVP has completed a controlled real Binance smoke across BTCUSDT, ETHUSDT, and SOLUSDT. See the [Bronze quality migration and live cutover runbook](docs/runbooks/bronze-quality-migration.md) for observed counts and boundaries. Silver is complete; ClickHouse serving and dashboard work remain next.
 
 ## Shutdown behavior
 

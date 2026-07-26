@@ -10,9 +10,9 @@ The project remains in the Version 1 bootstrap phase, but the first live ingesti
 
 ## Current and Target Data Flow
 
-Current verified ingestion flow:
+Current verified data flow:
 
-`Binance combined BTCUSDT/ETHUSDT/SOLUSDT stream -> producer normalization to TradeEvent -> persistent Kafka -> Spark quality-v2 classifier -> canonical 15-column Iceberg Bronze table -> Parquet/metadata in MinIO`
+`Binance combined BTCUSDT/ETHUSDT/SOLUSDT stream -> producer normalization to TradeEvent -> persistent Kafka -> Spark quality-v2 classifier -> canonical 15-column Iceberg Bronze table -> valid-row bounded transformation -> deterministic Silver Iceberg -> Parquet/metadata in MinIO`
 
 Spark processing progress is persisted separately:
 
@@ -29,6 +29,12 @@ The broader target remains:
 `... -> Iceberg -> ClickHouse -> dashboard + basic DQ checks`
 
 ClickHouse and dashboard serving are not part of the current implementation.
+
+### Silver boundary
+
+`canonical Bronze -> valid-row bounded transformation -> deterministic Silver Iceberg`
+
+Silver is the cleaned analytical source of truth. It contains only `is_valid = true` Bronze rows, exact decimal `price`, `quantity`, and `notional`, UTC millisecond timestamps, signed source-to-ingestion latency, and Kafka coordinates as audit fields. ClickHouse will be a reproducible serving copy of Silver, not a replacement source of truth. `(topic, partition, offset)` is unique only within a source/topic epoch; quality-v1 and quality-v2 may reuse offsets, so collisions are retained rather than treated as duplicate business events. A future `source_epoch` or topic-generation identity is deferred to replay/deduplication reliability work.
 
 ## Component Responsibilities
 
