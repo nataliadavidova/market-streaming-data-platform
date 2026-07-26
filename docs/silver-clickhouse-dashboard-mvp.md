@@ -106,7 +106,13 @@ canonical Bronze
 → replace previous Silver state
 ```
 
-The implementation must validate the exact Iceberg replacement mechanism at runtime. Candidates are `INSERT OVERWRITE`, `CREATE OR REPLACE TABLE AS SELECT`, or a staging table followed by replacement. No mechanism is selected here without evidence that the project Spark/Iceberg runtime supports it. Two consecutive builds over unchanged Bronze must produce the same row count and the same Kafka topic/partition/offset identities, with no duplicate Silver rows.
+The implementation must validate the exact Iceberg replacement mechanism at runtime. Candidates are `INSERT OVERWRITE`, `CREATE OR REPLACE TABLE AS SELECT`, or a staging table followed by replacement. No mechanism is selected here without evidence that the project Spark/Iceberg runtime supports it. Two consecutive builds over unchanged Bronze must produce the same complete multiset of Silver rows, not merely the same row count or coordinate set. A deterministic row serialization plus SHA-256 and occurrence counts is suitable; process-random Python `hash()` is not.
+
+### Transport identity and Kafka source epochs
+
+`(kafka_topic, kafka_partition, kafka_offset)` is unique only within one Kafka topic/source epoch. Recreated Kafka timelines can reuse a topic name and reset offsets. The preserved Bronze table contains valid rows from both the earlier quality-v1 timeline and the current persistent quality-v2 timeline, so reused coordinates are expected historical evidence rather than proof of duplicate trades.
+
+Silver preserves these coordinates for audit and local traceability, but the current contract does not treat them as a globally unique primary key. Rows must not be dropped solely because coordinates collide. A globally unique transport identity would require an additional `source_epoch` or topic-generation identifier; adding that field is deferred to replay/deduplication reliability work. No historical epoch is inferred from symbols, values, timestamps, snapshot order, or other heuristics.
 
 ## 5. Serving alternatives
 
@@ -207,7 +213,7 @@ The implemented milestone is complete when it proves:
 3. Decimal price, quantity, and notional calculations remain exact.
 4. Epoch-millisecond conversion and `latency_ms` are correct.
 5. Kafka topic/partition/offset coordinates remain traceable.
-6. Two consecutive Silver builds over unchanged Bronze produce the same row count and transport identities without duplicate rows.
+6. Two consecutive Silver builds over unchanged Bronze produce the same complete multiset of Silver rows, including occurrence counts for exact duplicate rows, without append accumulation.
 7. Silver data loads repeatedly into ClickHouse using the documented staging/full-rebuild boundary without duplication.
 8. ClickHouse queries return the expected BTCUSDT, ETHUSDT, and SOLUSDT dimensions.
 9. Superset displays the four KPI cards and four compact charts with symbol/time filters.
