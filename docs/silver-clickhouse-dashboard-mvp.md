@@ -299,7 +299,221 @@ For unchanged Silver input:
 - the second rebuild does not accumulate duplicate rows;
 - failed pre-exchange validation does not alter the serving table.
 
-## 7. Superset dashboard contract
+## 7. ClickHouse infrastructure contract
+
+### Image and architecture
+
+Use the official pinned image:
+
+```text
+clickhouse/clickhouse-server:26.3.17.56
+```
+
+`26.3.17.56` is the approved ClickHouse release version. The full
+version tag is substantially more stable and reproducible than moving
+aliases such as `latest`, `lts`, `26`, or `26.3`, which are rejected.
+Docker tags are registry references and are not technically immutable;
+the version tag identifies the selected software release, not a
+byte-identical artifact identity. The unsuffixed standard image is
+preferred for local development; Alpine and distroless variants are
+outside the MVP.
+
+For byte-identical image reproducibility, the implementation must resolve
+and record the multi-platform manifest-index digest associated with the
+approved version tag. The final Compose image reference must use both the
+readable version tag and that digest:
+
+```text
+clickhouse/clickhouse-server:26.3.17.56@sha256:<manifest-index-digest>
+```
+
+The exact digest is intentionally not written here until registry access
+is available and the manifest is verified. The digest is the immutable
+artifact identity. It must identify the multi-platform manifest index;
+an amd64-only or arm64-only child-image digest must not be used. A
+platform-specific child digest would break the native cross-architecture
+contract. Any later change to the ClickHouse version or pinned digest
+requires an explicit reviewed repository change.
+
+The resolved manifest must support both native architectures:
+
+- `linux/amd64`
+- `linux/arm64`
+
+Compose must select the native image architecture from the
+multi-platform manifest. Do not configure `platform: linux/amd64`; native
+Apple Silicon development must not require x86 emulation.
+
+Implementation verification must inspect the exact `26.3.17.56` registry
+manifest, confirm both required architectures, capture the top-level
+multi-platform manifest-index digest, place that digest in the Compose
+image reference, and validate native platform selection on both supported
+architectures without `platform: linux/amd64`. The previous local
+manifest command failed because registry DNS was unavailable; this is a
+verification limitation, not a design failure.
+
+### Compose service identity and network
+
+The service name is:
+
+```text
+clickhouse
+```
+
+No explicit `container_name` is required. Other Compose services and
+containerized jobs address it through Docker DNS as `clickhouse`. The
+service joins the existing project Compose network; it must not create an
+isolated ClickHouse-only network.
+
+### Ports and connection boundaries
+
+The container exposes:
+
+- HTTP: `8123`
+- native: `9000`
+
+The default host mappings are:
+
+```text
+${CLICKHOUSE_HTTP_PORT:-18123}:8123
+${CLICKHOUSE_NATIVE_PORT:-19000}:9000
+```
+
+From the host, clients use:
+
+```text
+HTTP:   localhost:${CLICKHOUSE_HTTP_PORT}
+native: localhost:${CLICKHOUSE_NATIVE_PORT}
+```
+
+From another Compose service, clients use:
+
+```text
+HTTP:   clickhouse:8123
+native: clickhouse:9000
+```
+
+Host port `19000` avoids collision with MinIO host port `9000`. Host
+networking is not used.
+
+### User and credentials
+
+The local MVP uses one technical user:
+
+```text
+market_loader
+```
+
+The configured `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` values are
+environment-backed and are shared by the `clickhouse-connect` control
+plane and Spark JDBC data plane. For the local MVP, `CLICKHOUSE_USER`
+resolves to `market_loader`. Credentials must not be hardcoded in
+`docker-compose.yml`. `CLICKHOUSE_SKIP_USER_SETUP=1` is not enabled.
+
+The committed `.env.example` may later contain safe development examples,
+but real credentials remain outside Git. A separate read-only dashboard
+user is deferred to the dashboard slice.
+
+### Database ownership
+
+Application configuration uses:
+
+```text
+CLICKHOUSE_DATABASE=market_analytics
+```
+
+The implementation must not rely on `CLICKHOUSE_DB` container bootstrap to
+establish the database contract. The Python control plane explicitly runs:
+
+```sql
+CREATE DATABASE IF NOT EXISTS market_analytics
+ENGINE = Atomic
+```
+
+Explicit creation keeps the Atomic engine visible and testable rather than
+depending on implicit image initialization. The stale `market_data` value
+currently present in `.env.example` will be corrected during the
+implementation/configuration slice.
+
+### Persistent storage
+
+Use one named Compose volume:
+
+```text
+clickhouse-data:/var/lib/clickhouse
+```
+
+Ordinary container recreation preserves serving data. The volume may be
+explicitly removed during a destructive reset. ClickHouse remains a
+reproducible serving copy even though the local volume is persistent, and
+Silver Iceberg remains the source of truth.
+
+Do not add a persistent volume for `/var/log/clickhouse-server`, and do
+not use a host bind mount for ClickHouse data in the MVP.
+
+### Healthcheck and file descriptors
+
+The service healthcheck must run a real authenticated query using the
+bundled `clickhouse-client`:
+
+```sql
+SELECT 1
+```
+
+The healthcheck must use `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` and
+prove query readiness, not merely process existence or an open TCP port.
+Its timing contract is:
+
+```text
+interval:      5s
+timeout:       3s
+retries:       20
+start_period: 10s
+```
+
+The exact Compose escaping of environment variables remains deferred to
+the implementation slice and must be covered by configuration/runtime
+validation.
+
+The service configures the official image's recommended file-descriptor
+limit:
+
+```text
+nofile:
+  soft: 262144
+  hard: 262144
+```
+
+No additional Linux capabilities are required for the MVP.
+
+### Lifecycle
+
+Infrastructure lifecycle remains explicit. Later Makefile targets will
+provide bounded operations for starting ClickHouse, waiting for healthy
+status, inspecting status, stopping it without deleting data, and
+performing a destructive reset with explicit volume deletion. Exact
+Makefile target names are deferred. The MVP does not configure an
+automatic restart policy.
+
+### Infrastructure acceptance criteria
+
+Infrastructure implementation is accepted only when:
+
+- the exact `26.3.17.56` tag resolves successfully;
+- its manifest includes `linux/amd64` and `linux/arm64`;
+- the Compose image is pinned to the verified multi-platform
+  manifest-index digest;
+- `docker compose config` validates;
+- the service starts on Apple Silicon without forced amd64 emulation;
+- the healthcheck reaches healthy status;
+- authenticated HTTP and native queries both return `SELECT 1` successfully;
+- the reported server version equals `26.3.17.56`;
+- the named volume preserves data across container recreation;
+- an explicit destructive reset removes the ClickHouse volume;
+- the control plane creates `market_analytics` with `ENGINE = Atomic`;
+- no ClickHouse service starts implicitly from application code.
+
+## 8. Superset dashboard contract
 
 Recommend Superset because it is the conventional lightweight SQL dashboard layer and no visualization layer exists in the repository. The first dashboard should fit one screen.
 
@@ -324,7 +538,7 @@ Charts:
 
 Datasets should query `market_analytics.silver_trades` directly. Dashboard freshness is refresh-based in this milestone, not continuous real-time serving. No authentication, role model, alerting, scheduled reports, or production BI governance is part of this local milestone.
 
-## 8. Recommended implementation sequence
+## 9. Recommended implementation sequence
 
 1. Add the approved ClickHouse database, identical target/staging DDL, and control-plane schema checks.
 2. Add the bounded Spark JDBC data-plane load from the complete Silver snapshot.
@@ -336,7 +550,7 @@ Datasets should query `market_analytics.silver_trades` directly. Dashboard fresh
 
 The first implementation branch should stop after deterministic Silver tests and one bounded local Silver→ClickHouse validation if the infrastructure is available. Dashboard wiring follows the serving-table contract rather than driving it.
 
-## 9. Acceptance criteria
+## 10. Acceptance criteria
 
 The implemented milestone is complete when it proves:
 
@@ -352,7 +566,7 @@ The implemented milestone is complete when it proves:
 10. A short subsequent real Binance run becomes visible after the supported refresh/load procedure.
 11. The process is documented and reproducible locally.
 
-## 10. Non-goals
+## 11. Non-goals
 
 - Gold tables or permanent aggregate tables.
 - Continuous ClickHouse streaming sinks.
@@ -363,18 +577,30 @@ The implemented milestone is complete when it proves:
 - Large-scale performance tuning.
 - Production Superset authentication, roles, governance, or alerting.
 
-## 11. Explicitly deferred decisions
+## 12. Explicitly deferred decisions
 
 The following decisions remain outside this design slice:
 
-- exact pinned ClickHouse image and version;
-- Compose service and healthcheck;
-- port and credential wiring;
-- persistent volume configuration;
+- `docker-compose.yml` implementation;
+- `.env.example` changes;
+- dependency installation;
 - JDBC and Python dependency versions;
-- implementation module names;
+- loader implementation;
+- DDL implementation;
 - Makefile targets;
+- custom ClickHouse configuration files;
+- init scripts;
+- TLS;
+- Keeper;
+- replication and clustering;
+- resource quotas;
 - dashboard implementation;
+- dashboard read-only user;
+- persistent ClickHouse log volume;
+- backup and multi-version rollback;
+- production secret management;
+- cloud deployment;
+- implementation module names;
 - incremental ClickHouse loading;
 - incremental Silver loading;
 - replay-aware `source_epoch` and global deduplication.
