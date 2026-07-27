@@ -144,33 +144,160 @@ This avoids a load job but couples dashboard availability to Iceberg object/cata
 
 ## 6. ClickHouse serving contract
 
-Use one table:
+Silver remains the authoritative analytical source of truth:
+
+```text
+market_catalog.market.silver_trades
+```
+
+ClickHouse is a reproducible serving copy only. The serving table is:
 
 ```text
 market_analytics.silver_trades
 ```
 
-Proposed columns mirror Silver, with `Decimal(38,18)` for `price`, `quantity`, and `notional`, `DateTime64(3)` for `event_time` and `ingested_at`, `Int64` for `latency_ms` and `kafka_offset`, `Int32` for `kafka_partition`, and `String` for text fields. Keep Kafka coordinates in the serving table.
+The existing `market_data` value in `.env.example` is stale scaffolding and will be corrected in a later implementation or documentation slice. It is not the approved serving database name.
 
-Use `MergeTree` with:
+### Loading boundaries
+
+Spark is the data plane:
+
+- resolve and record one exact Iceberg `snapshot_id` for `market_catalog.market.silver_trades` at the beginning of the rebuild;
+- read the complete Silver Iceberg snapshot identified by that recorded `snapshot_id`;
+- write the complete DataFrame to ClickHouse staging through the official ClickHouse JDBC driver;
+- read staging back through JDBC when needed for validation.
+
+The Python `clickhouse-connect` client is the control plane:
+
+- create the Atomic database and both tables;
+- inspect ClickHouse schemas;
+- truncate staging at the start of a rebuild;
+- run validation queries;
+- perform the atomic table exchange.
+
+The complete Silver DataFrame must not be collected to the Python driver for insertion.
+
+All source-side operations for one rebuild use the same recorded Silver
+snapshot: full DataFrame read, schema validation, `NULL` validation, row
+count, symbol set, per-symbol row counts, and the complete row-multiset
+fingerprint. The staging table is compared with that recorded snapshot, not
+with whatever snapshot is current under the Silver table name later in the
+run. This prevents a concurrent Silver rebuild from producing a false
+mismatch or a serving copy assembled against inconsistent source states.
+
+For the MVP, concurrent Silver and ClickHouse rebuilds may additionally be
+prohibited operationally, but that restriction does not replace the
+`snapshot_id` contract. The exact Spark time-travel syntax for reading the
+recorded snapshot remains deferred to the implementation slice.
+
+### Exact ClickHouse schema
+
+The serving and staging tables preserve all 12 Silver columns in the same order. The mapping is:
+
+| Silver type | ClickHouse type |
+| --- | --- |
+| `STRING` | `String` |
+| `DECIMAL(38,18)` | `Decimal(38,18)` |
+| `TIMESTAMP` | `DateTime64(3, 'UTC')` |
+| `BIGINT` | `Int64` |
+| `INT` | `Int32` |
+
+All target columns are non-nullable. The loader must validate that every required Silver column contains zero `NULL` values before loading or exchanging tables.
+
+### Database and table design
+
+The database and tables are:
 
 ```text
-ORDER BY (symbol, event_time, kafka_partition, kafka_offset)
+CREATE DATABASE market_analytics ENGINE = Atomic
+
+market_analytics.silver_trades
+market_analytics.silver_trades_staging
 ```
 
-At the current local scale, daily partitioning adds lifecycle complexity without a demonstrated benefit; do not partition the first table merely by convention.
-
-For the first demo dataset, use a deterministic full rebuild with a staging table:
+Both tables must have identical DDL. Both use `MergeTree` with monthly event-time partitioning:
 
 ```text
-build/load staging table
-→ validate row count and expected symbols
-→ replace or swap market_analytics.silver_trades
+PARTITION BY toYYYYMM(event_time)
 ```
 
-If atomic replacement is unsupported or disproportionate, a simpler rebuild is allowed only when its interruption window and partial-state limitation are documented clearly. The load command must make its rebuild boundary explicit and must never claim incremental or exactly-once behavior. Two loads over unchanged Silver must return the same row count without duplication. A later incremental design can use a measured watermark only after requirements exist.
+The ordering key is, in order:
 
-`ReplacingMergeTree` is not recommended now: it would introduce deduplication semantics that are explicitly out of scope and could obscure duplicate-source behavior.
+```text
+ORDER BY (
+    exchange,
+    symbol,
+    event_time,
+    trade_id,
+    kafka_topic,
+    kafka_partition,
+    kafka_offset
+)
+```
+
+The ordering key is not a uniqueness constraint. Ordinary `MergeTree` preserves duplicate rows. `ReplacingMergeTree` is rejected because the serving copy must preserve the complete Silver row multiset and must not perform implicit deduplication.
+
+### Full-rebuild lifecycle
+
+Each rebuild uses this exact sequence:
+
+1. Resolve and record the source `snapshot_id` for `market_catalog.market.silver_trades`.
+2. Ensure the `market_analytics` Atomic database exists.
+3. Ensure `market_analytics.silver_trades` and `market_analytics.silver_trades_staging` exist with identical schemas.
+4. Truncate staging while leaving the current serving target untouched.
+5. Read the complete Silver snapshot identified by the recorded `snapshot_id`.
+6. Write the complete snapshot to staging through Spark JDBC.
+7. Validate staging against the pre-exchange contract using that same recorded snapshot.
+8. Atomically exchange the tables:
+
+   ```sql
+   EXCHANGE TABLES
+       market_analytics.silver_trades
+   AND market_analytics.silver_trades_staging
+   ```
+
+9. After the exchange, the serving table contains the new snapshot and staging contains the previous serving snapshot.
+10. The previous serving snapshot is available for rollback only until the next rebuild attempt begins.
+11. At the start of the next rebuild attempt, staging is truncated.
+
+Failures before `EXCHANGE` leave the serving target unchanged. If that attempt has begun, staging may be empty or partially loaded and the older rollback snapshot is no longer retained. Truncating and inserting directly into the serving table is rejected, as is a non-atomic multi-step rename. Retaining more than one historical serving snapshot or providing durable multi-version rollback is outside the MVP.
+
+### Pre-exchange validation
+
+Before exchange, require all of the following:
+
+- exact expected schema and column order;
+- zero `NULL` values in all 12 columns;
+- Silver row count equal to staging row count;
+- matching symbol sets;
+- matching per-symbol row counts;
+- a matching complete SHA-256 row-multiset fingerprint over all 12 columns after canonical normalization.
+
+Both complete fingerprints use the same Spark canonical-normalization implementation:
+
+- fingerprint A is computed from the recorded Silver snapshot;
+- fingerprint B is computed from the staging table read back through JDBC.
+
+The complete cross-system fingerprint comparison does not use a separate
+ClickHouse-side fingerprint algorithm. `clickhouse-connect` may run bounded
+operational validation queries such as schema inspection, row count, `NULL`
+counts, symbol-set checks, and per-symbol counts, but Spark owns the shared
+canonicalization used for the complete comparison. This prevents Decimal,
+timestamp, string, and row-serialization rules from diverging between
+engines. Canonical normalization must use the declared column order and
+types, deterministic timestamp and decimal representations, explicit
+separators, and a deterministic ordering of serialized rows before hashing.
+The fingerprint must preserve duplicate multiplicity. Count comparison alone
+is insufficient because different row contents can have the same count.
+
+### Repeatability acceptance criteria
+
+For unchanged Silver input:
+
+- two complete ClickHouse rebuilds produce the same row count;
+- two complete rebuilds produce the same full row-multiset fingerprint;
+- the second rebuild does not accumulate duplicate rows;
+- failed pre-exchange validation does not alter the serving table.
 
 ## 7. Superset dashboard contract
 
@@ -199,14 +326,13 @@ Datasets should query `market_analytics.silver_trades` directly. Dashboard fresh
 
 ## 8. Recommended implementation sequence
 
-1. Add deterministic Silver schema and a bounded Spark batch reader from canonical Bronze.
-2. Test filtering, decimal notional, millisecond timestamp conversion, latency, and coordinate preservation with local Spark fixtures.
-3. Add isolated local Iceberg Silver-table creation and repeatable full-rebuild behavior.
-4. Add ClickHouse Compose/service configuration only when the Silver contract tests pass.
-5. Add a bounded loader from Silver to `market_analytics.silver_trades` with explicit rebuild semantics.
-6. Add read-only ClickHouse query checks for the three symbols and metric definitions.
-7. Add Superset dataset/dashboard configuration and a concise local runbook.
-8. Run one short real-data refresh using the existing Bronze rows, then document the supported refresh procedure.
+1. Add the approved ClickHouse database, identical target/staging DDL, and control-plane schema checks.
+2. Add the bounded Spark JDBC data-plane load from the complete Silver snapshot.
+3. Add pre-exchange row-count, symbol-set, per-symbol-count, null, schema, and row-multiset fingerprint validation.
+4. Add the Atomic `EXCHANGE TABLES` full-rebuild lifecycle and failure-boundary checks.
+5. Add read-only ClickHouse query checks for the three symbols and metric definitions.
+6. Add Superset dataset/dashboard configuration and a concise local runbook.
+7. Run one short real-data refresh using the existing Silver rows, then document the supported refresh procedure.
 
 The first implementation branch should stop after deterministic Silver tests and one bounded local Silver→ClickHouse validation if the infrastructure is available. Dashboard wiring follows the serving-table contract rather than driving it.
 
@@ -237,10 +363,20 @@ The implemented milestone is complete when it proves:
 - Large-scale performance tuning.
 - Production Superset authentication, roles, governance, or alerting.
 
-## 11. Open questions requiring implementation evidence
+## 11. Explicitly deferred decisions
 
-- Does the selected Spark/Iceberg runtime preserve `DECIMAL(38,18)` for `price * quantity`, or must `notional` use a narrower documented precision after overflow tests?
-- Which ClickHouse image/version and local Compose resource limits provide a stable, reproducible load without adding unnecessary services?
-- Should the bounded loader replace the demo table or truncate its rows, and which operation is safest for the chosen ClickHouse engine?
-- What exact Superset provisioning format is least maintenance-heavy for this repository: SQL dataset definitions, a small export, or manual setup instructions?
-- What refresh duration and freshness target would justify a later incremental or continuous serving design?
+The following decisions remain outside this design slice:
+
+- exact pinned ClickHouse image and version;
+- Compose service and healthcheck;
+- port and credential wiring;
+- persistent volume configuration;
+- JDBC and Python dependency versions;
+- implementation module names;
+- Makefile targets;
+- dashboard implementation;
+- incremental ClickHouse loading;
+- incremental Silver loading;
+- replay-aware `source_epoch` and global deduplication.
+
+Superset provisioning format and refresh-duration targets also remain future dashboard and operational decisions. The approved serving boundary is bounded and refresh-based, not continuous.
