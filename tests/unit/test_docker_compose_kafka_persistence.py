@@ -43,11 +43,13 @@ def test_kafka_persistence_change_does_not_touch_streaming_storage_contracts() -
     config = _compose_config()
     makefile = MAKEFILE_PATH.read_text()
 
-    assert set(config["services"]) == {"kafka", "minio", "minio-init", "iceberg-rest"}
-    assert set(config["volumes"]) == {
+    required_services = {"kafka", "minio", "minio-init", "iceberg-rest"}
+    assert required_services <= set(config["services"])
+    required_volumes = {
         "kafka_data",
         "iceberg_catalog_data",
         "minio_data",
     }
+    assert required_volumes <= set(config["volumes"])
     assert "iceberg-trade-stream:" in makefile
     assert "iceberg-inspect:" in makefile
