@@ -4,9 +4,11 @@ KAFKA_TOPIC_PARTITIONS := 1
 KAFKA_TOPIC_REPLICATION_FACTOR := 1
 ICEBERG_REST_CONFIG_URL := http://localhost:8181/v1/config
 ICEBERG_READY_MAX_ATTEMPTS := 60
+CLICKHOUSE_WAIT_TIMEOUT_SECONDS := 120
+CLICKHOUSE_WAIT_INTERVAL_SECONDS := 2
 SPARK_ICEBERG_TRADE_PACKAGES := org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.2,org.apache.hadoop:hadoop-aws:3.4.2,org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.11.0,org.apache.iceberg:iceberg-aws-bundle:1.11.0
 
-.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps iceberg-trade-stream iceberg-inspect iceberg-migrate-bronze-quality iceberg-rebuild-silver
+.PHONY: install-dev test status kafka-up kafka-down kafka-create-topic kafka-describe-topic kafka-consume-one kafka-smoke-publish-one iceberg-up iceberg-down iceberg-ps iceberg-trade-stream iceberg-inspect iceberg-migrate-bronze-quality iceberg-rebuild-silver clickhouse-up clickhouse-wait clickhouse-status clickhouse-stop
 
 install-dev:
 	python -m pip install -e ".[dev]"
@@ -68,6 +70,44 @@ iceberg-down:
 
 iceberg-ps:
 	docker compose ps minio minio-init iceberg-rest
+
+clickhouse-up:
+	docker compose up -d clickhouse
+	@echo "ClickHouse started; persisted data is preserved."
+
+clickhouse-wait:
+	@container_id="$$( docker compose ps -q clickhouse )"; \
+	diagnostics() { \
+		docker compose ps clickhouse; \
+		docker compose logs --no-color --tail=100 clickhouse; \
+	}; \
+	if [ -z "$$container_id" ]; then \
+		echo "ClickHouse container not found." >&2; \
+		diagnostics; \
+		exit 1; \
+	fi; \
+	deadline=$$(( $$(date +%s) + $(CLICKHOUSE_WAIT_TIMEOUT_SECONDS) )); \
+	while :; do \
+		health_status="$$(docker inspect --format '{{.State.Health.Status}}' "$$container_id" 2>/dev/null || true)"; \
+		case "$$health_status" in \
+			healthy) echo "ClickHouse is healthy."; exit 0 ;; \
+			unhealthy) echo "ClickHouse became unhealthy." >&2; diagnostics; exit 1 ;; \
+			"") echo "ClickHouse container disappeared or has no health status." >&2; diagnostics; exit 1 ;; \
+		esac; \
+		if [ "$$(date +%s)" -ge "$$deadline" ]; then \
+			echo "Timed out waiting 120 seconds for ClickHouse to become healthy." >&2; \
+			diagnostics; \
+			exit 1; \
+		fi; \
+		sleep $(CLICKHOUSE_WAIT_INTERVAL_SECONDS); \
+	done
+
+clickhouse-status:
+	docker compose ps clickhouse
+
+clickhouse-stop:
+	docker compose stop clickhouse
+	@echo "ClickHouse stopped; container and persisted data are preserved."
 
 iceberg-trade-stream:
 	PYTHONPATH=. spark-submit \
