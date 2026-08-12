@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import os
 import sys
+import time
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
@@ -52,8 +53,11 @@ class StagingLoadSummary:
 
 
 def build_jdbc_url(config: clickhouse_schema.ClickHouseConfig) -> str:
-    """Build the HTTP ClickHouse JDBC URL without credentials."""
-    return f"jdbc:clickhouse://{config.host}:{config.http_port}/{config.database}"
+    """Build the HTTP JDBC URL with an explicit UTC session timezone."""
+    return (
+        f"jdbc:clickhouse://{config.host}:{config.http_port}/{config.database}"
+        "?session_timezone=UTC"
+    )
 
 
 def write_snapshot_to_staging(
@@ -134,6 +138,10 @@ def load_silver_snapshot_to_staging(
 
 def _build_spark(environ: Mapping[str, str]) -> object:
     """Build the shared Iceberg/S3A session with the serving-only JDBC package."""
+    # ClickHouse JDBC 0.8.6 decodes DateTime64 through the JVM default timezone;
+    # keep that conversion aligned with the repository-wide UTC Spark contract.
+    os.environ["TZ"] = "UTC"
+    time.tzset()
     args = parse_streaming_args([], environ=environ)
     packages = f"{SPARK_ICEBERG_PACKAGES},{CLICKHOUSE_JDBC_PACKAGE}"
     builder = SparkSession.builder.config("spark.jars.packages", packages)

@@ -281,7 +281,7 @@ def test_jdbc_write_uses_http_append_and_no_overwrite_or_truncate() -> None:
 
     assert frame.write.formats == ["jdbc"]
     assert frame.write.options == {
-        "url": "jdbc:clickhouse://localhost:18123/market_analytics",
+        "url": "jdbc:clickhouse://localhost:18123/market_analytics?session_timezone=UTC",
         "dbtable": "market_analytics.silver_trades_staging",
         "driver": "com.clickhouse.jdbc.Driver",
         "user": "market_loader",
