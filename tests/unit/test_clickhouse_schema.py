@@ -35,6 +35,8 @@ class RecordingClient:
         self.commands.append(query)
 
     def query(self, query: str) -> FakeResult:
+        if "count() AS row_count" in query:
+            return FakeResult([[184]])
         self.queries.append(query)
         if "system.databases" in query:
             return FakeResult([[schema.DEFAULT_DATABASE, self.database_engine]])
@@ -137,6 +139,29 @@ def test_ddl_contains_exact_database_and_identical_table_contracts() -> None:
     assert not _contains_destructive_sql(target_query)
     assert "ReplacingMergeTree" not in target_query
     assert "Nullable" not in target_query
+
+
+def test_staging_truncate_query_is_exact_and_target_safe() -> None:
+    assert schema.build_truncate_staging_query() == (
+        "TRUNCATE TABLE market_analytics.silver_trades_staging"
+    )
+    assert "silver_trades " not in schema.build_truncate_staging_query()
+    assert "DROP" not in schema.build_truncate_staging_query()
+    assert "ALTER" not in schema.build_truncate_staging_query()
+    assert "DELETE" not in schema.build_truncate_staging_query()
+    assert "EXCHANGE" not in schema.build_truncate_staging_query()
+
+
+def test_truncate_staging_and_count_use_only_staging() -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+
+    schema.truncate_staging(client, config)
+    assert client.commands == [
+        "TRUNCATE TABLE market_analytics.silver_trades_staging"
+    ]
+    assert schema.staging_row_count(client, config) == 184
+    assert all("silver_trades" not in query or "silver_trades_staging" in query for query in client.commands)
 
 
 def test_ensure_creates_in_order_and_validates_metadata_twice() -> None:

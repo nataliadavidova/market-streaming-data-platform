@@ -367,6 +367,48 @@ def ensure_schema(
     )
 
 
+def build_truncate_staging_query(
+    database: str = DEFAULT_DATABASE,
+) -> str:
+    """Build the only approved destructive statement for staging loads."""
+    database = validate_identifier(database, "database")
+    return f"TRUNCATE TABLE {database}.{STAGING_TABLE}"
+
+
+def truncate_staging(
+    client: ClickHouseClient,
+    config: ClickHouseConfig,
+) -> None:
+    """Empty only the validated Silver staging table."""
+    _command(
+        client,
+        build_truncate_staging_query(config.database),
+        f"truncate staging table {config.database}.{STAGING_TABLE}",
+    )
+
+
+def staging_row_count(
+    client: ClickHouseClient,
+    config: ClickHouseConfig,
+) -> int:
+    """Read the bounded row count from the validated Silver staging table."""
+    rows = _query(
+        client,
+        f"SELECT count() AS row_count FROM {validate_identifier(config.database, 'database')}.{STAGING_TABLE}",
+        f"count staging table {config.database}.{STAGING_TABLE}",
+    )
+    if len(rows) != 1:
+        raise ClickHouseControlPlaneError(
+            f"staging row-count query returned {len(rows)} rows"
+        )
+    try:
+        return int(_row_value(rows[0], "row_count", 0))
+    except (TypeError, ValueError, KeyError, IndexError) as exc:
+        raise ClickHouseControlPlaneError(
+            "staging row-count query returned an invalid value"
+        ) from exc
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Ensure the ClickHouse serving schema without loading data"
