@@ -124,6 +124,20 @@ class SchemaReport:
     column_count: int
 
 
+@dataclass(frozen=True)
+class ServingExchangeResult:
+    """Bounded result for one non-idempotent target/staging exchange."""
+
+    database: str
+    target_table: str
+    staging_table: str
+    pre_target_row_count: int
+    pre_staging_row_count: int
+    post_target_row_count: int
+    post_staging_row_count: int
+    exchange_status: str
+
+
 def validate_identifier(value: str, setting_name: str = "identifier") -> str:
     """Validate one unquoted ClickHouse identifier for safe SQL composition."""
     if not _IDENTIFIER.fullmatch(value):
@@ -348,6 +362,15 @@ def ensure_schema(
         f"create table {config.database}.{STAGING_TABLE}",
     )
 
+    return validate_schema(client, config)
+
+
+def validate_schema(
+    client: ClickHouseClient,
+    config: ClickHouseConfig,
+) -> SchemaReport:
+    """Validate existing Atomic serving objects without issuing DDL."""
+    validate_identifier(config.database, "database")
     database_name, database_engine = _database_metadata(client, config.database)
     if database_name != config.database:
         raise ClickHouseControlPlaneError("database name mismatch")
@@ -365,6 +388,47 @@ def ensure_schema(
         table_engine=TABLE_ENGINE,
         column_count=len(TABLE_COLUMNS),
     )
+
+
+def build_exchange_tables_query(
+    database: str = DEFAULT_DATABASE,
+) -> str:
+    """Build the fixed-role, non-idempotent serving-table exchange SQL."""
+    database = validate_identifier(database, "database")
+    return (
+        f"EXCHANGE TABLES {database}.{TARGET_TABLE} "
+        f"AND {database}.{STAGING_TABLE}"
+    )
+
+
+def _table_row_count(
+    client: ClickHouseClient,
+    config: ClickHouseConfig,
+    table: str,
+) -> int:
+    rows = _query(
+        client,
+        f"SELECT count() AS row_count FROM {validate_identifier(config.database, 'database')}.{table}",
+        f"count table {config.database}.{table}",
+    )
+    if len(rows) != 1:
+        raise ClickHouseControlPlaneError(
+            f"{table} row-count query returned {len(rows)} rows"
+        )
+    try:
+        return int(_row_value(rows[0], "row_count", 0))
+    except (TypeError, ValueError, KeyError, IndexError) as exc:
+        raise ClickHouseControlPlaneError(
+            f"{table} row-count query returned an invalid value"
+        ) from exc
+
+
+def target_row_count(
+    client: ClickHouseClient,
+    config: ClickHouseConfig,
+) -> int:
+    """Read the bounded row count from the fixed active target table."""
+    return _table_row_count(client, config, TARGET_TABLE)
 
 
 def build_truncate_staging_query(
@@ -392,21 +456,43 @@ def staging_row_count(
     config: ClickHouseConfig,
 ) -> int:
     """Read the bounded row count from the validated Silver staging table."""
-    rows = _query(
+    return _table_row_count(client, config, STAGING_TABLE)
+
+
+def exchange_serving_tables(
+    client: ClickHouseClient,
+    config: ClickHouseConfig,
+) -> ServingExchangeResult:
+    """Atomically exchange fixed target/staging roles exactly once.
+
+    This function is deliberately non-idempotent: it never retries EXCHANGE
+    and never attempts rollback if post-exchange verification fails.
+    """
+    validate_schema(client, config)
+    pre_target = target_row_count(client, config)
+    pre_staging = staging_row_count(client, config)
+    _command(
         client,
-        f"SELECT count() AS row_count FROM {validate_identifier(config.database, 'database')}.{STAGING_TABLE}",
-        f"count staging table {config.database}.{STAGING_TABLE}",
+        build_exchange_tables_query(config.database),
+        "exchange serving tables",
     )
-    if len(rows) != 1:
+    validate_schema(client, config)
+    post_target = target_row_count(client, config)
+    post_staging = staging_row_count(client, config)
+    if post_target != pre_staging or post_staging != pre_target:
         raise ClickHouseControlPlaneError(
-            f"staging row-count query returned {len(rows)} rows"
+            "post-exchange row counts do not match the pre-exchange roles"
         )
-    try:
-        return int(_row_value(rows[0], "row_count", 0))
-    except (TypeError, ValueError, KeyError, IndexError) as exc:
-        raise ClickHouseControlPlaneError(
-            "staging row-count query returned an invalid value"
-        ) from exc
+    return ServingExchangeResult(
+        database=config.database,
+        target_table=TARGET_TABLE,
+        staging_table=STAGING_TABLE,
+        pre_target_row_count=pre_target,
+        pre_staging_row_count=pre_staging,
+        post_target_row_count=post_target,
+        post_staging_row_count=post_staging,
+        exchange_status="exchanged",
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

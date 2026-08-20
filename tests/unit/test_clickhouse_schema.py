@@ -164,6 +164,220 @@ def test_truncate_staging_and_count_use_only_staging() -> None:
     assert all("silver_trades" not in query or "silver_trades_staging" in query for query in client.commands)
 
 
+def test_exchange_sql_is_fixed_and_exact() -> None:
+    assert schema.build_exchange_tables_query() == (
+        "EXCHANGE TABLES market_analytics.silver_trades "
+        "AND market_analytics.silver_trades_staging"
+    )
+    assert "DROP" not in schema.build_exchange_tables_query()
+    assert "TRUNCATE" not in schema.build_exchange_tables_query()
+    assert "RENAME" not in schema.build_exchange_tables_query()
+
+
+@dataclass
+class ExchangeRecordingClient(RecordingClient):
+    count_values: list[int] | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.count_values is None:
+            self.count_values = [10, 25, 25, 10]
+
+    def query(self, query: str) -> FakeResult:
+        if "count() AS row_count" in query:
+            assert self.count_values
+            return FakeResult([[self.count_values.pop(0)]])
+        return super().query(query)
+
+
+def test_exchange_validates_counts_swaps_roles_and_executes_once() -> None:
+    client = ExchangeRecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+
+    result = schema.exchange_serving_tables(client, config)
+
+    assert result.pre_target_row_count == 10
+    assert result.pre_staging_row_count == 25
+    assert result.post_target_row_count == 25
+    assert result.post_staging_row_count == 10
+    assert result.exchange_status == "exchanged"
+    assert client.commands == [
+        "EXCHANGE TABLES market_analytics.silver_trades AND "
+        "market_analytics.silver_trades_staging"
+    ]
+
+
+def test_exchange_rejects_unsafe_database_without_command() -> None:
+    client = ExchangeRecordingClient()
+    config = schema.ClickHouseConfig(
+        database="market_analytics;DROP",
+        user="market_loader",
+        password="secret-value",
+    )
+
+    with pytest.raises(schema.ClickHouseControlPlaneError, match="safe"):
+        schema.exchange_serving_tables(client, config)
+    assert client.commands == []
+
+
+def test_exchange_order_is_schema_counts_exchange_schema_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    events: list[str] = []
+    counts = iter([10, 25, 25, 10])
+
+    monkeypatch.setattr(schema, "validate_schema", lambda *_: events.append("schema"))
+    monkeypatch.setattr(schema, "target_row_count", lambda *_: (events.append("target_count") or next(counts)))
+    monkeypatch.setattr(schema, "staging_row_count", lambda *_: (events.append("staging_count") or next(counts)))
+
+    schema.exchange_serving_tables(client, config)
+
+    assert events == [
+        "schema", "target_count", "staging_count",
+        "schema", "target_count", "staging_count",
+    ]
+    assert len(client.commands) == 1
+
+
+def test_exchange_schema_failure_prevents_counts_and_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    monkeypatch.setattr(
+        schema,
+        "validate_schema",
+        lambda *_: (_ for _ in ()).throw(schema.ClickHouseControlPlaneError("schema mismatch")),
+    )
+
+    with pytest.raises(schema.ClickHouseControlPlaneError, match="schema mismatch"):
+        schema.exchange_serving_tables(client, config)
+    assert client.commands == []
+
+
+def test_exchange_pre_count_failure_prevents_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    monkeypatch.setattr(schema, "validate_schema", lambda *_: None)
+    monkeypatch.setattr(
+        schema,
+        "target_row_count",
+        lambda *_: (_ for _ in ()).throw(schema.ClickHouseControlPlaneError("count failed")),
+    )
+
+    with pytest.raises(schema.ClickHouseControlPlaneError, match="count failed"):
+        schema.exchange_serving_tables(client, config)
+    assert client.commands == []
+
+
+def test_exchange_failure_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    monkeypatch.setattr(schema, "validate_schema", lambda *_: None)
+    monkeypatch.setattr(schema, "target_row_count", lambda *_: 10)
+    monkeypatch.setattr(schema, "staging_row_count", lambda *_: 25)
+    monkeypatch.setattr(
+        schema,
+        "_command",
+        lambda *_: (_ for _ in ()).throw(schema.ClickHouseControlPlaneError("exchange failed")),
+    )
+
+    with pytest.raises(schema.ClickHouseControlPlaneError, match="exchange failed"):
+        schema.exchange_serving_tables(client, config)
+    assert client.commands == []
+
+
+def test_post_count_mismatch_fails_without_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    counts = iter([10, 25, 24, 10])
+    monkeypatch.setattr(schema, "validate_schema", lambda *_: None)
+    monkeypatch.setattr(schema, "target_row_count", lambda *_: next(counts))
+    monkeypatch.setattr(schema, "staging_row_count", lambda *_: next(counts))
+
+    with pytest.raises(schema.ClickHouseControlPlaneError, match="post-exchange"):
+        schema.exchange_serving_tables(client, config)
+    assert client.commands == [
+        "EXCHANGE TABLES market_analytics.silver_trades AND "
+        "market_analytics.silver_trades_staging"
+    ]
+
+
+def test_post_schema_failure_fails_without_rollback_or_second_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    validation_calls = 0
+
+    def validate_for_exchange(*_: object) -> None:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 2:
+            raise schema.ClickHouseControlPlaneError("post-schema validation failed")
+
+    monkeypatch.setattr(schema, "validate_schema", validate_for_exchange)
+    monkeypatch.setattr(schema, "target_row_count", lambda *_: 10)
+    monkeypatch.setattr(schema, "staging_row_count", lambda *_: 25)
+
+    with pytest.raises(
+        schema.ClickHouseControlPlaneError,
+        match="post-schema validation failed",
+    ):
+        schema.exchange_serving_tables(client, config)
+
+    assert validation_calls == 2
+    assert client.commands == [
+        "EXCHANGE TABLES market_analytics.silver_trades AND "
+        "market_analytics.silver_trades_staging"
+    ]
+    assert all(
+        not re.search(
+            r"\b(?:TRUNCATE|RENAME|DROP|DELETE|INSERT|ALTER)\b",
+            command,
+            flags=re.IGNORECASE,
+        )
+        for command in client.commands
+    )
+
+
+def test_post_staging_count_mismatch_fails_without_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    counts = iter([10, 25, 25, 11])
+    monkeypatch.setattr(schema, "validate_schema", lambda *_: None)
+    monkeypatch.setattr(schema, "target_row_count", lambda *_: next(counts))
+    monkeypatch.setattr(schema, "staging_row_count", lambda *_: next(counts))
+
+    with pytest.raises(schema.ClickHouseControlPlaneError, match="post-exchange"):
+        schema.exchange_serving_tables(client, config)
+
+    assert client.commands == [
+        "EXCHANGE TABLES market_analytics.silver_trades AND "
+        "market_analytics.silver_trades_staging"
+    ]
+
+
+def test_exchange_result_and_errors_do_not_expose_credentials() -> None:
+    client = ExchangeRecordingClient()
+    config = schema.ClickHouseConfig.from_environment(_environment())
+    result = schema.exchange_serving_tables(client, config)
+
+    assert "secret-value" not in repr(result)
+    assert "secret-value" not in str(result)
+    assert all("secret-value" not in command for command in client.commands)
+
+
 def test_ensure_creates_in_order_and_validates_metadata_twice() -> None:
     client = RecordingClient()
     config = schema.ClickHouseConfig.from_environment(_environment())
