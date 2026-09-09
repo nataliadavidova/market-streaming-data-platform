@@ -12,6 +12,10 @@ CLICKHOUSE_IMAGE = (
     "clickhouse/clickhouse-server:26.3.17.56@"
     "sha256:422be85ae7344058369cdd366ac0efea9daa8428b55c9cf50258e83a7d12fcb3"
 )
+METABASE_IMAGE = (
+    "metabase/metabase:v0.63.16.9@"
+    "sha256:539036fd311440ff6e22ad433914d23a69b2ec0fba3896745706a68f70319490"
+)
 
 
 def _rendered_compose_config() -> dict:
@@ -100,3 +104,46 @@ def test_clickhouse_example_environment_contract() -> None:
     assert environment["CLICKHOUSE_DATABASE"] == "market_analytics"
     assert environment["CLICKHOUSE_USER"] == "market_loader"
     assert "CLICKHOUSE_DB" not in environment
+
+
+def test_rendered_metabase_service_contract() -> None:
+    config = _rendered_compose_config()
+    metabase = config["services"]["metabase"]
+
+    assert metabase["image"] == METABASE_IMAGE
+    assert "platform" not in metabase
+    assert "container_name" not in metabase
+    assert "restart" not in metabase
+    assert "healthcheck" not in metabase
+    assert "depends_on" not in metabase
+    assert "network_mode" not in metabase
+
+    assert {
+        (str(port["published"]), int(port["target"]))
+        for port in metabase["ports"]
+    } == {("3000", 3000)}
+
+    assert metabase["environment"] == {
+        "MB_DB_TYPE": "h2",
+        "MB_DB_FILE": "/metabase-data/metabase.db",
+    }
+    assert {
+        (mount["source"], mount["target"])
+        for mount in metabase["volumes"]
+    } == {("metabase-data", "/metabase-data")}
+    assert "metabase-data" in config["volumes"]
+    assert "CLICKHOUSE_HOST" not in metabase["environment"]
+    assert set(config["services"]) == {
+        "kafka",
+        "minio",
+        "minio-init",
+        "iceberg-rest",
+        "clickhouse",
+        "metabase",
+    }
+
+
+def test_metabase_example_environment_contract() -> None:
+    environment = _example_environment()
+
+    assert environment["METABASE_PORT"] == "3000"
