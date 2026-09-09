@@ -193,6 +193,36 @@ def test_snapshot_binding_keeps_a_after_current_advances_to_b(
     assert summary.source_row_count == 1
 
 
+def test_explicit_snapshot_id_skips_latest_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = FakeFrame("snapshot-a")
+    events: list[str] = []
+    monkeypatch.setattr(
+        loader,
+        "resolve_current_snapshot_id",
+        lambda *_: (_ for _ in ()).throw(AssertionError("latest resolved")),
+    )
+    monkeypatch.setattr(loader, "read_silver_snapshot", lambda *_: frame)
+    monkeypatch.setattr(loader, "validate_silver_schema", lambda *_: None)
+    monkeypatch.setattr(loader, "validate_required_nulls", lambda *_: {})
+    monkeypatch.setattr(loader, "compute_source_summary", lambda *_args, **_kwargs: _summary(456, 1))
+    monkeypatch.setattr(clickhouse_schema, "ensure_schema", lambda *_: None)
+    monkeypatch.setattr(clickhouse_schema, "truncate_staging", lambda *_: None)
+    monkeypatch.setattr(clickhouse_schema, "staging_row_count", lambda *_: 1)
+    monkeypatch.setattr(loader, "write_snapshot_to_staging", lambda *_: events.append("write"))
+
+    summary = loader.load_silver_snapshot_to_staging(
+        object(),
+        clickhouse_schema.ClickHouseConfig.from_environment(_environment()),
+        snapshot_id=456,
+        client_factory=lambda _config: FakeClient(),
+    )
+
+    assert summary.snapshot_id == 456
+    assert events == ["write"]
+
+
 def test_source_schema_failure_prevents_control_plane_and_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

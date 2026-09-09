@@ -88,12 +88,14 @@ def load_silver_snapshot_to_staging(
     spark: Any,
     config: clickhouse_schema.ClickHouseConfig,
     *,
+    snapshot_id: int | None = None,
     client_factory: clickhouse_schema.ClientFactory = clickhouse_schema.connect_client,
     source_table: str = DEFAULT_SILVER_TABLE,
     max_display_symbols: int = 20,
 ) -> StagingLoadSummary:
     """Validate one bound snapshot, load staging, and check row-count transport."""
-    snapshot_id = resolve_current_snapshot_id(spark, source_table)
+    if snapshot_id is None:
+        snapshot_id = resolve_current_snapshot_id(spark, source_table)
     dataframe = read_silver_snapshot(spark, snapshot_id, source_table)
     validate_silver_schema(dataframe)
     null_counts = validate_required_nulls(dataframe)
