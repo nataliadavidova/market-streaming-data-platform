@@ -67,6 +67,7 @@ def test_rendered_clickhouse_service_contract() -> None:
     environment = clickhouse["environment"]
     assert "CLICKHOUSE_USER" in environment
     assert "CLICKHOUSE_PASSWORD" in environment
+    assert environment["CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT"] == "1"
     assert "CLICKHOUSE_DB" not in environment
     assert "CLICKHOUSE_SKIP_USER_SETUP" not in environment
 
@@ -103,6 +104,7 @@ def test_clickhouse_example_environment_contract() -> None:
     assert environment["CLICKHOUSE_NATIVE_PORT"] == "19000"
     assert environment["CLICKHOUSE_DATABASE"] == "market_analytics"
     assert environment["CLICKHOUSE_USER"] == "market_loader"
+    assert environment["CLICKHOUSE_BI_PASSWORD"] == ""
     assert "CLICKHOUSE_DB" not in environment
 
 
