@@ -30,7 +30,7 @@ from jobs.streaming.iceberg_trade_streaming_job import (
 )
 
 
-CLICKHOUSE_JDBC_PACKAGE = "com.clickhouse:clickhouse-jdbc:0.8.6"
+CLICKHOUSE_JDBC_PACKAGE = "com.clickhouse:clickhouse-jdbc:0.9.9"
 CLICKHOUSE_JDBC_DRIVER = "com.clickhouse.jdbc.Driver"
 STAGING_TABLE = clickhouse_schema.STAGING_TABLE
 
@@ -140,8 +140,7 @@ def load_silver_snapshot_to_staging(
 
 def _build_spark(environ: Mapping[str, str]) -> object:
     """Build the shared Iceberg/S3A session with the serving-only JDBC package."""
-    # ClickHouse JDBC 0.8.6 decodes DateTime64 through the JVM default timezone;
-    # keep that conversion aligned with the repository-wide UTC Spark contract.
+    # Keep JVM timezone aligned with the repository-wide UTC timestamp contract.
     os.environ["TZ"] = "UTC"
     time.tzset()
     args = parse_streaming_args([], environ=environ)

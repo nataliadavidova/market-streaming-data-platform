@@ -325,7 +325,7 @@ def test_jdbc_write_uses_http_append_and_no_overwrite_or_truncate() -> None:
 def test_serving_spark_packages_keep_iceberg_and_add_jdbc_driver() -> None:
     packages = f"{loader.SPARK_ICEBERG_PACKAGES},{loader.CLICKHOUSE_JDBC_PACKAGE}"
 
-    assert loader.CLICKHOUSE_JDBC_PACKAGE == "com.clickhouse:clickhouse-jdbc:0.8.6"
+    assert loader.CLICKHOUSE_JDBC_PACKAGE == "com.clickhouse:clickhouse-jdbc:0.9.9"
     assert loader.SPARK_ICEBERG_PACKAGES in packages
     assert packages.endswith(loader.CLICKHOUSE_JDBC_PACKAGE)
 
