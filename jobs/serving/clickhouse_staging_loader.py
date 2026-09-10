@@ -53,10 +53,10 @@ class StagingLoadSummary:
 
 
 def build_jdbc_url(config: clickhouse_schema.ClickHouseConfig) -> str:
-    """Build the HTTP JDBC URL with an explicit UTC session timezone."""
+    """Build the HTTP JDBC URL with an explicit UTC client timezone."""
     return (
         f"jdbc:clickhouse://{config.host}:{config.http_port}/{config.database}"
-        "?session_timezone=UTC"
+        "?use_server_time_zone=false&use_time_zone=UTC"
     )
 
 

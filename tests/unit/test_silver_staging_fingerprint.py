@@ -271,7 +271,7 @@ def test_staging_jdbc_read_uses_exact_http_options() -> None:
     assert result is reader
     assert reader.format_name == "jdbc"
     assert reader.options == {
-        "url": "jdbc:clickhouse://localhost:18123/market_analytics?session_timezone=UTC",
+        "url": "jdbc:clickhouse://localhost:18123/market_analytics?use_server_time_zone=false&use_time_zone=UTC",
         "dbtable": "market_analytics.silver_trades_staging",
         "driver": "com.clickhouse.jdbc.Driver",
         "user": "market_loader",
