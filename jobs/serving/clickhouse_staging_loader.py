@@ -146,7 +146,14 @@ def _build_spark(environ: Mapping[str, str]) -> object:
     time.tzset()
     args = parse_streaming_args([], environ=environ)
     packages = f"{SPARK_ICEBERG_PACKAGES},{CLICKHOUSE_JDBC_PACKAGE}"
-    builder = SparkSession.builder.config("spark.jars.packages", packages)
+    builder = (
+        SparkSession.builder.config("spark.jars.packages", packages)
+        # JDBC writes have side effects; fail the bounded serving attempt rather
+        # than transparently replaying a partially accepted task or stage.
+        .config("spark.task.maxFailures", "1")
+        .config("spark.stage.maxConsecutiveAttempts", "1")
+        .config("spark.speculation", "false")
+    )
     return build_iceberg_trade_spark_session(
         app_name="market-clickhouse-silver-staging-loader",
         catalog_name=args.catalog_name,

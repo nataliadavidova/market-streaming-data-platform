@@ -1,6 +1,7 @@
 """Unit tests for the snapshot-bound ClickHouse staging loader."""
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 import pytest
 
 from jobs.serving import clickhouse_schema
@@ -327,6 +328,61 @@ def test_serving_spark_packages_keep_iceberg_and_add_jdbc_driver() -> None:
     assert loader.CLICKHOUSE_JDBC_PACKAGE == "com.clickhouse:clickhouse-jdbc:0.8.6"
     assert loader.SPARK_ICEBERG_PACKAGES in packages
     assert packages.endswith(loader.CLICKHOUSE_JDBC_PACKAGE)
+
+
+class RecordingSparkBuilder:
+    def __init__(self) -> None:
+        self.configs: list[tuple[str, str]] = []
+
+    def config(self, key: str, value: str) -> "RecordingSparkBuilder":
+        self.configs.append((key, value))
+        return self
+
+
+class FakeSparkSessionType:
+    builder = RecordingSparkBuilder()
+
+
+def test_serving_spark_session_fails_fast_for_side_effecting_jdbc_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = RecordingSparkBuilder()
+    FakeSparkSessionType.builder = builder
+    monkeypatch.setattr(loader, "SparkSession", FakeSparkSessionType)
+    monkeypatch.setattr(
+        loader,
+        "parse_streaming_args",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            catalog_name="market_catalog",
+            catalog_uri="http://iceberg-rest:8181",
+            warehouse="s3a://market-lake/warehouse",
+            s3_endpoint="http://minio:9000",
+            s3_region="us-east-1",
+            s3_access_key="minioadmin",
+            s3_secret_key="minioadmin",
+            s3_path_style_access=True,
+            s3a_ssl_enabled=False,
+        ),
+    )
+    monkeypatch.setattr(
+        loader,
+        "build_iceberg_trade_spark_session",
+        lambda **kwargs: kwargs["builder"],
+    )
+
+    session_builder = loader._build_spark({})
+
+    assert session_builder is builder
+    assert ("spark.task.maxFailures", "1") in builder.configs
+    assert ("spark.stage.maxConsecutiveAttempts", "1") in builder.configs
+    assert ("spark.speculation", "false") in builder.configs
+    assert all(
+        key.startswith("spark.task.")
+        or key.startswith("spark.stage.")
+        or key == "spark.speculation"
+        or key == "spark.jars.packages"
+        for key, _value in builder.configs
+    )
 
 
 def test_duplicate_rows_are_passed_to_writer_without_transformation(
