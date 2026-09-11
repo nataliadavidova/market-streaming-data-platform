@@ -2,23 +2,25 @@
 
 A portfolio Data Engineering project for a real-time market data platform.
 
-The Version 1 target flow is:
+The current end-to-end flow is:
 
-`Market API/WebSocket -> Kafka -> Spark Structured Streaming -> Iceberg on S3-compatible storage -> ClickHouse -> dashboard + basic DQ checks`
+`Binance WebSocket -> Kafka -> Spark Structured Streaming -> Bronze Iceberg -> Silver Iceberg -> ClickHouse -> bi_reader -> Metabase`
 
-The implemented analytical path is now:
+![Market streaming architecture overview](docs/assets/market-streaming-overview.png)
 
-`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> 15-column Iceberg Bronze table -> deterministic Silver Iceberg -> Parquet/metadata in MinIO`
+The continuous path through Bronze and the bounded serving path are implemented as:
+
+`Binance WebSocket -> production Binance producer -> Kafka -> Spark Structured Streaming -> Bronze quality classifier -> 15-column Iceberg Bronze table -> deterministic Silver Iceberg -> bounded ClickHouse full-snapshot publication -> bi_reader -> Metabase`
 
 Spark Kafka progress is persisted separately through:
 
 `Spark checkpoint -> Hadoop S3A -> MinIO`
 
-The REST catalog stores the current Iceberg metadata pointer. ClickHouse, dashboard serving, and the broader Version 1 target are still ahead on the roadmap.
+The REST catalog stores the current Iceberg metadata pointer. Silver is the authoritative source of truth; ClickHouse is a reproducible serving copy. Silver and ClickHouse are currently refreshed through bounded full rebuilds rather than continuous serving.
 
 ## Technology Stack
 
-Current and planned technologies:
+Current technologies:
 
 - Python 3.11
 - Binance WebSocket
@@ -27,7 +29,8 @@ Current and planned technologies:
 - Apache Iceberg
 - MinIO as local S3-compatible storage
 - Iceberg REST catalog
-- ClickHouse (planned)
+- ClickHouse
+- Metabase
 - Docker Compose for local services
 - GitHub Actions for unit-test CI
 
@@ -53,8 +56,10 @@ Current and planned technologies:
 - Producer shutdown/final-flush INFO logging: implemented and live-tested.
 - Reconnect lifecycle observability: implemented and controlled-smoke tested.
 - Bronze Iceberg -> deterministic Silver Iceberg: implemented; Silver contains only valid trades and is reproducibly rebuilt.
+- Bounded Silver -> ClickHouse full-snapshot publication: implemented and acceptance-tested.
+- Read-only `bi_reader` serving access and Metabase refresh: verified.
 
-This is a verified ingestion milestone, not a claim that the whole Version 1 platform is complete.
+The continuous Bronze path and bounded local serving path are verified. Incremental serving and production operations remain outside the current implementation.
 
 ## Current Implementation
 
@@ -169,7 +174,7 @@ The migration targets only `market_catalog.market.bronze_trades`. It recognizes 
 
 The canonical table and live writer now share the exact 15-column quality contract. The live job uses the versioned `quality-v2` checkpoint and query name; it does not reuse or delete either historical checkpoint.
 
-The local streaming MVP has completed a controlled real Binance smoke across BTCUSDT, ETHUSDT, and SOLUSDT. See the [Bronze quality migration and live cutover runbook](docs/runbooks/bronze-quality-migration.md) for observed counts and boundaries. Silver is complete; ClickHouse serving and dashboard work remain next.
+The local streaming MVP has completed a controlled real Binance smoke across BTCUSDT, ETHUSDT, and SOLUSDT. See the [Bronze quality migration and live cutover runbook](docs/runbooks/bronze-quality-migration.md) for observed counts and boundaries. See the [Silver-to-ClickHouse contract](docs/silver-clickhouse-dashboard-mvp.md) and [ClickHouse serving refresh runbook](docs/runbooks/clickhouse-serving-refresh.md) for the bounded serving path.
 
 ## Shutdown behavior
 
@@ -271,7 +276,7 @@ Run tests:
 make test
 ```
 
-Latest verified suite: 298 tests passed. Live-quality integration coverage includes 2 Kafka-source tests, 7 S3A-checkpoint tests, 51 streaming-job tests, and 19 Bronze-classifier tests.
+Latest verified CI suite: 445 tests passed.
 
 ## Manual smoke checks
 
@@ -300,7 +305,7 @@ The broader Binance -> Kafka -> Spark -> Iceberg and checkpoint-recovery results
 - Monitoring, polling, batching, backpressure, replay, and backfill remain future work.
 - SIGKILL and arbitrary crash-timing safety are not proven.
 - Kubernetes deployment, readiness, and termination integration are not verified.
-- ClickHouse serving and dashboard layers remain future roadmap work.
+- Continuous ClickHouse serving, incremental Silver/serving, and production BI operations remain future roadmap work.
 - Network-partition recovery, rate-limit handling, and long-running throughput stability remain unverified.
 
 ## Roadmap and architecture

@@ -230,4 +230,6 @@ All observed rows had positive trade values, populated event/ingestion and Kafka
 
 Kafka `market.trades.raw` retained its TopicId and end offset `182`, and records remained readable after one ordinary `make kafka-down` -> `make kafka-up` cycle using the named broker volume. Producer and Spark were stopped cleanly; a terminal wrapper interruption may report exit 130 even when Spark cleanup exits 0. This is controlled local evidence, not a universal exactly-once, replay, disaster-recovery, or multi-broker durability guarantee.
 
-The next milestone is minimal Silver -> ClickHouse -> mini-dashboard.
+The bounded Silver-to-ClickHouse serving path is now documented in the
+[ClickHouse serving refresh runbook](clickhouse-serving-refresh.md). This
+historical migration evidence remains separate from serving publication.

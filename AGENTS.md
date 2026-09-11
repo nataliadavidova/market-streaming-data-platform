@@ -45,7 +45,7 @@ Main goals:
 - Spark Structured Streaming reads Kafka.
 - Spark parses, validates, and normalizes events.
 - Data is written to Iceberg tables.
-- Aggregates are written to ClickHouse.
+- Silver data is published to a ClickHouse serving copy.
 - Basic data quality checks are added.
 - A simple dashboard or analytical SQL layer is added.
 
@@ -71,155 +71,16 @@ Add feature tables, feature store, MLflow, model training, prediction table/API.
 
 Add Terraform, cloud resources, deployment strategy, and optional Kubernetes.
 
-## Current project state
+## Current durable project boundaries
 
-The latest completed storage milestone is the deterministic Silver Iceberg layer. Valid Kafka rows pass through the Bronze quality classifier, persist to the canonical 15-column Bronze table, and are reproducibly rebuilt into `market_catalog.market.silver_trades`.
-
-Current Python package:
-
-`jobs`
-
-Current config file:
-
-`config/market_symbols.yaml`
-
-Current architecture boundaries:
-
-- Kafka separates the Binance producer from Spark processing.
-- Iceberg table metadata is managed through the REST catalog and S3FileIO.
-- Spark progress is stored through Hadoop S3A checkpoints.
-- MinIO stores Iceberg data, metadata, and checkpoint objects for local smoke runs.
-- Production Bronze must not be used for destructive smoke tests; use a dedicated topic, table, and checkpoint.
-- Silver reads only canonical `market_catalog.market.bronze_trades` with the exact quality 15-column schema, keeps `is_valid = true` rows only, and does not mutate, deduplicate, or infer a historical source epoch.
-- Silver uses Iceberg V2 `writeTo(...).using("iceberg").createOrReplace()` for bounded full replacement. `(topic, partition, offset)` is source/topic-epoch-local, so coordinate collisions are retained; future `source_epoch` is deferred to replay/deduplication work.
-
-The read-only Iceberg inspection workflow is implemented through `make iceberg-inspect` and `jobs.streaming.iceberg_inspection`. It reports existing Bronze table identity, schema, row count, snapshots, history, data files, and partition metadata without creating or mutating tables, starting a streaming query, or reading checkpoints.
-
-The Bronze quality classifier is implemented in `jobs.streaming.bronze_quality`. It preserves each raw Kafka row and its audit fields, safely classifies JSON, identity, decimal, timestamp, and Kafka-coordinate issues with `is_valid` and ordered `validation_errors`, and now feeds the canonical Iceberg streaming sink without filtering.
-
-The isolated persisted Bronze quality contract is implemented in `jobs.streaming.iceberg_quality_contract`. It accepts the classifier's exact 15-column output, validates the isolated table schema and incoming DataFrame schema, and performs a static Iceberg append to `market_catalog.market.bronze_trades_quality_smoke`. The canonical table is explicitly rejected; no streaming query, checkpoint, or live write path is involved.
-
-The canonical migration remains explicit through `make iceberg-migrate-bronze-quality`. The live job does not run DDL: it requires `QUALITY_15_COLUMN` before building the Kafka source, uses `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2`, and rejects both historical checkpoints. Neither historical checkpoint is modified.
-
-Current local service config:
-
-- `docker-compose.yml` defines local Kafka, MinIO, and Iceberg REST services. Kafka runs single-node KRaft with host listener `localhost:9092` and Docker-network listener `kafka:29092`.
-- Kafka broker state is persisted in the named Compose volume `kafka_data`, resolved locally as `market_streaming_data_platform_kafka_data`, mounted at `/var/lib/kafka/data` with `KAFKA_LOG_DIRS=/var/lib/kafka/data`. The ordinary `docker compose down` -> `up` lifecycle preserves local topics, offsets, and records. The previous container-local `/tmp/kafka-logs` state was not recoverable.
-- `docker compose config` has passed for the local services.
-- Makefile targets cover explicit Kafka/Iceberg lifecycle, topic checks, `iceberg-trade-stream`, `iceberg-inspect`, and `iceberg-migrate-bronze-quality`.
-- GitHub Actions CI runs `make test` on pull requests and pushes to `main`.
-
-Latest repository state:
-
-- Kafka persistence implementation commit: `d5fe96f Persist Kafka broker state`.
-- Kafka persistence validation: focused configuration tests 4 passed, full suite 302 passed, Compose config and diff checks passed. Probe topic `market.kafka.persistence.probe.v2` retained TopicId `F-WKZJefSoClnDoU6F9JRw`, partition 0 offset `0:1`, and message `persistence-probe-v2` across two ordinary Kafka `down -> up` cycles.
-- The quality-v1 checkpoint remains preserved and must not be reused with a newly created Kafka timeline; future reset/cutover work should use a new versioned checkpoint/query epoch such as quality-v2.
-
-- Bronze quality-v2 implementation commit: `9b4518a Start Bronze quality v2 epoch`.
-- Focused validation: 62 tests passed; full suite 304 passed; Compose and diff checks passed.
-- Controlled real Binance smoke used BTCUSDT, ETHUSDT, and SOLUSDT and appended 182 valid rows (162/13/7 by symbol) to canonical Bronze. The persistent Kafka topic retained its identity and offsets through one ordinary `down -> up` cycle.
-- Current quality-v2 checkpoint/query: `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2` / `market-iceberg-bronze-trades-quality-v2`.
-- Silver milestone: 188 Bronze rows yielded 184 valid Silver rows; repeated unchanged builds matched complete row-multiset fingerprints. Focused Silver tests: 9; full suite: 313.
-
-- Live quality integration commit: `c4228ff Connect Bronze quality live stream`.
-- Focused validation: Kafka source 2 passed, S3A checkpoint 7 passed, streaming job 51 passed, and Bronze classifier 19 passed.
-- Full suite: 298 passed. Diff check and Compose configuration validation passed.
-- Controlled Spark 4.1.2 / Iceberg 1.11.0 initial-start and restart smoke passed. The observed Kafka identities were topic `market.trades.raw`, partition 0, offsets `0..4`; all five were appended once in that smoke with expected quality labels and preserved raw/audit fields.
-- The canonical table remained exactly 15 columns and grew from one historical unevaluated row to six rows. The new checkpoint was reused for restart; the old checkpoint was not selected, copied, reset, migrated, or deleted.
-- Terminal interruption made `make` return 130. Spark logged successful query/context cleanup with exit code 0, and final Compose state was empty. Code 130 is neither a successful application exit nor a data-processing failure in this smoke.
-
-Verified runtime evidence:
-
-- A real Binance WebSocket trade reached Kafka through the production receiver/parser and was written to a dedicated Iceberg table with an advancing S3A checkpoint.
-- A controlled long-running producer run produced 641 records at Kafka offsets `0..640`; Spark wrote 641 rows with no missing or duplicate offsets in that run.
-- Spark restart with the same checkpoint resumed saved Kafka progress; the tested previously committed record was not replayed and a new record was written once.
-- Spark application-level SIGINT and SIGTERM, and producer SIGINT and SIGTERM, completed cleanly in the tested scenarios.
-- Producer SIGTERM observability showed three dedicated-topic records, return code `0`, final flush `remaining=0`, required INFO markers in order, observed shutdown duration `3.615s` with WebSocket context exit about `2.002s`, no forced cleanup, and no orphan process.
-- A controlled local two-session reconnect smoke published trade `990000000001` at Kafka offset `0`, observed a normal close, accepted session 2 after `5.005s`, published trade `990000000002` at offset `1`, logged recovery, remained alive, then handled SIGTERM with final flush `remaining=0`, exit code `0`, and no third session.
-- The reconnect observability smoke emitted `BINANCE_RECONNECT_ATTEMPT attempt=1 delay_seconds=5.0 failure_type=ConnectionClosedOK`, measured `5.004438s` from session close to session 2 acceptance, emitted `BINANCE_RECONNECT_RECOVERED attempt=1 recovery_after_seconds=5.024`, and completed SIGTERM with exit code `0`, final flush `remaining=0`, and no third session. These logs are process-local evidence, not durable monitoring.
-- A real local-Kafka delivery-result smoke used the production publisher and adapter; `publish_message(..., flush=True)` returned after callback success, and the exact key/value was read back with the dedicated topic end offset advancing by one.
-- A controlled Iceberg inspection smoke passed against Spark 4.1.2, Iceberg 1.11.0, the Iceberg REST catalog, and MinIO. The existing Bronze table was inspected twice without a new snapshot or data file. Its unpartitioned `partitions` relation returned one aggregate statistics row without a `partition` column, which the inspector reports explicitly.
-- Static Spark quality validation passed with `spark.sql.ansi.enabled=true`: valid, malformed-JSON, and invalid-decimal rows were all classified in one DataFrame execution without changing the Iceberg schema or write path.
-- The canonical live-quality smoke classified offsets `0..4` across an initial start and restart with the same quality-v1 checkpoint. The observed identities were not appended again on restart; this is controlled evidence, not a universal exactly-once guarantee.
-
-These are controlled smokes. They do not establish universal exactly-once, no-loss, no-duplicate, replay/backfill, arbitrary-crash, Kubernetes, or throughput guarantees.
-
-Current producer modules:
-
-- `jobs/producer/config.py`
-- `jobs/producer/events.py`
-- `jobs/producer/binance.py`
-- `jobs/producer/kafka.py`
-- `jobs/producer/publisher.py`
-- `jobs/producer/confluent.py`
-- `jobs/producer/smoke_publish_one.py`
-- `jobs/producer/websocket.py`
-- `jobs/producer/binance_publisher.py`
-- `jobs/producer/binance_producer.py`
-
-Current implemented functions and models:
-
-- `load_config(config_path)`: reads YAML config using PyYAML and returns a Python dictionary.
-- `load_producer_config(config_path)`: reads and validates producer config using Pydantic models.
-- `TradeEvent`: internal producer trade event contract using `Decimal` for `price` and `quantity`.
-- `TradeEvent.to_json_message()`: serializes deterministic JSON while preserving decimal values as strings.
-- Binance URL and parser helpers build combined `@trade` streams and map Binance payloads into `TradeEvent`.
-- Reusable WebSocket/Binance receiver sessions capture receive-boundary timestamps and support repeated receives.
-- `prepare_trade_event_kafka_message(event)`: prepares the UTF-8-compatible key/value contract.
-- `KafkaPublisher` and `ConfluentKafkaProducerClient`: injectable publisher and concrete Kafka adapter boundaries.
-- `build_kafka_client(bootstrap_servers)`: creates the concrete Confluent Kafka client.
-- `receive_and_publish_one_binance_trade(receiver, publisher)`: receives one event, prepares one message, and publishes it.
-- `run_binance_trade_publish_loop(receiver, publisher)`: permanently repeats sequential receive/publish operations.
-- `run_binance_trade_publisher(config, publisher)`: owns the Binance receiver context around that loop.
-- `run_configured_binance_producer(config_path, bootstrap_servers, topic_override=None, *, connect=None)`: loads config, applies an immutable topic override, builds the client/publisher, installs the SIGTERM lifecycle, runs the producer, and finalizes Kafka; `connect` is an injectable WebSocket seam for controlled tests.
-- `python -m jobs.producer.binance_producer`: executable command with `--topic` → `KAFKA_TOPIC_TRADES_RAW` → YAML precedence, `KAFKA_BOOTSTRAP_SERVERS` with `localhost:9092` fallback, and standalone INFO logging.
-
-Producer shutdown contract:
-
-- SIGINT keeps the top-level `KeyboardInterrupt` path and returns normally after successful cleanup.
-- SIGTERM is handled by an asyncio loop callback that records the request and cancels the main task; the callback does not call WebSocket or Kafka code.
-- Cancellation unwinds the WebSocket context before the one bounded five-second final Kafka flush.
-- Finalization markers include `FINAL_KAFKA_FLUSH_STARTED`, `FINAL_KAFKA_FLUSH_RESULT`, `FINAL_KAFKA_FLUSH_SUCCEEDED`/`FAILED`, and `PRODUCER_SHUTDOWN_COMPLETED`.
-- Runtime and finalization exceptions propagate; cleanup errors must not replace an earlier runtime exception.
-
-Spark/Iceberg contract:
-
-- `jobs/streaming/iceberg_trade_streaming_job.py` requires the exact canonical 15-column schema, reads Kafka with explicit first-start `startingOffsets=latest`, classifies every raw row, and writes through the native Iceberg sink.
-- `classify_raw_trade_kafka_messages(kafka_df)` produces the 13 Bronze fields plus `is_valid` and ordered `validation_errors` without filtering.
-- Iceberg uses the REST catalog plus S3FileIO; MinIO stores data and metadata objects locally.
-- Graceful Spark shutdown uses a shutdown event, timed `awaitTermination` polling, `query.stop()` before `spark.stop()`, and handler restoration after cleanup.
-- `jobs/streaming/iceberg_inspection.py` provides a bounded, read-only table inspection CLI. It validates safe dotted identifiers, uses the existing Iceberg-enabled Spark configuration, and stops its owned Spark session while preserving inspection errors when cleanup also fails.
-- `jobs/streaming/iceberg_bronze_migration.py` provides the explicit canonical migration CLI. It owns only its migration Spark session and does not connect the classifier or streaming job.
-- The canonical live job uses query name `market-iceberg-bronze-trades-quality-v2` and checkpoint `s3a://market-lake/checkpoints/market/bronze-trades-quality-v2`. Legacy and quality-v1 checkpoint constants remain available only for compatibility and are rejected by this job.
-
-Known limitations and backlog:
-
-- The reconnect loop retries only classified WebSocket connection-establishment and receive transport failures; parser, configuration, programming, and Kafka publication failures remain fatal.
-- Reconnect does not replay or backfill trades missed while the Binance connection is unavailable.
-- Reconnect lifecycle logs expose incident-local attempts, configured delay, retryable failure type, and monotonic duration through the first successful Kafka publication; attempt and timing state reset after recovery.
-- These logs do not provide persistent counters, process uptime, run/session identifiers, periodic summaries, metrics export, dashboards, alerts, or external health checks.
-- Default-path per-message delivery callback observation is implemented; callback failure or a missing callback result raises `KafkaDeliveryError`.
-- Broader delivery acknowledgement policy, undelivered-message logging, delivery metrics, and monitoring are not implemented.
-- Kafka idempotent producer mode is not enabled.
-- Per-message Kafka flush remains synchronous with no explicit timeout; batching and throughput optimization are pending, and the flush return value is not a queue policy.
-- `flush=False` remains an unconfirmed enqueue-style compatibility path and is not used by production.
-- Polling, backpressure, replay, backfill, and deduplication remain future work.
-- There is no general end-to-end exactly-once or business-key deduplication guarantee.
-- SIGKILL and arbitrary crash-timing safety are not proven.
-- Kubernetes deployment/termination, ClickHouse serving, dashboard, and network-partition recovery remain future work.
-
-Other Markdown status:
-
-- `README.md` records the current verified milestone and operational boundaries.
-- `docs/architecture.md` and `docs/roadmap.md` retain the broader target architecture and sequencing.
-- Existing runbooks under `docs/runbooks/` contain operational procedures and historical evidence; update current capability statements without rewriting historical results.
-
-Next stage:
-
-- Canonical Bronze quality classification, schema migration, and live integration are complete in the tested local scope.
-- The immediate next task is ClickHouse serving as a reproducible copy of Silver. Keep historical backfill, replay, deduplication, monitoring, maintenance, and producer throughput work separate.
-- Reconnect, default-path delivery-result observation, and reconnect lifecycle logging are complete in the tested scope. Next, make a read-only decision between producer throughput/per-message flush and broader monitoring; keep these reliability areas separate.
-- Do not combine those three reliability areas in one slice.
+- The current local path is `Binance WebSocket -> Kafka -> Spark Structured Streaming -> Bronze Iceberg -> Silver Iceberg -> ClickHouse -> bi_reader -> Metabase`.
+- Kafka separates the Binance producer from Spark processing. Iceberg metadata uses the REST catalog and S3FileIO; MinIO stores local Iceberg and Hadoop S3A checkpoint objects.
+- Bronze is the continuous quality-classified streaming layer with the exact canonical 15-column contract. Use the versioned quality-v2 checkpoint for the canonical live job and dedicated resources for destructive smoke tests.
+- Silver reads canonical `market_catalog.market.bronze_trades`, keeps `is_valid = true` rows only, and uses bounded full replacement. It does not mutate, deduplicate, or infer a historical source epoch.
+- Silver is the authoritative source of truth. ClickHouse is a reproducible bounded serving copy. The serving workflow validates staging before one atomic exchange; see `docs/silver-clickhouse-dashboard-mvp.md` and `docs/runbooks/clickhouse-serving-refresh.md`.
+- `(topic, partition, offset)` is source/topic-epoch-local. Future source epochs, replay, deduplication, incremental Silver, and continuous serving remain deferred.
+- The producer and Spark jobs have explicit graceful-shutdown contracts. Their operational procedures live in `docs/runbooks/`.
+- GitHub Actions runs `make test` on pull requests and pushes to `main`.
 
 ## Python environment
 
@@ -272,21 +133,3 @@ Do not add ignored files.
 ## Coding conventions
 
 Python files should start with a short module-level docstring explaining what the file does.
-
-## Immediate next likely step
-
-Reconnect, delivery-result observation, Iceberg inspection, Bronze quality classification, canonical schema migration, canonical live quality integration, and deterministic Silver are implemented and tested. The immediate next action is ClickHouse serving; keep producer throughput, monitoring, historical backfill, replay, deduplication, and maintenance separate.
-
-## Historical pre-52124a8 next step
-
-Reconnect is implemented and live-smoke tested. Perform a read-only decision between delivery observability/callbacks, producer throughput/per-message flush, and monitoring. Keep those reliability areas separate; do not implement them together.
-
-Current test suite:
-
-- 19 focused Bronze quality tests pass in `tests/unit/test_streaming_bronze_quality.py`.
-- 2 existing trade parser tests pass in `tests/unit/test_streaming_trades.py`.
-- 20 focused Iceberg inspection tests pass in `tests/unit/test_streaming_iceberg_inspection.py`.
-- 19 focused reconnect lifecycle tests pass in `tests/unit/test_binance_publisher.py`.
-- 2 Kafka-source, 7 S3A-checkpoint, 51 streaming-job, and 19 Bronze-classifier tests pass for the live quality milestone.
-- 298 tests pass in the full suite at the live quality milestone.
-- Tests are not automatically rerun for documentation-only changes unless explicitly requested.

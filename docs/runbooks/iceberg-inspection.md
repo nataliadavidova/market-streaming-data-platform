@@ -145,14 +145,18 @@ This workflow does not provide:
 
 - Spark checkpoint inspection or checkpoint repair;
 - Bronze data-quality validation or quarantine;
-- a Silver table;
+- validation of Silver or ClickHouse serving;
 - deduplication, replay, or backfill;
 - monitoring, metrics, or alerting;
 - Iceberg maintenance, compaction, snapshot expiration, or orphan cleanup;
 - schema-evolution policy;
 - an exactly-once guarantee.
 
-The next storage slice is a narrow Bronze data-quality contract with explicit validity rules and deterministic handling. Broader Silver modeling, storage monitoring, producer monitoring, Kafka batching/backpressure redesign, Iceberg maintenance, schema evolution, deduplication, and replay remain separate future work.
+Use the Silver rebuild and ClickHouse serving workflows for those layers; this
+inspector remains limited to read-only Bronze/Iceberg table inspection.
+Deduplication, replay, storage monitoring, producer monitoring, Kafka
+batching/backpressure redesign, Iceberg maintenance, and schema evolution
+remain separate future work.
 
 ## Cleanup
 

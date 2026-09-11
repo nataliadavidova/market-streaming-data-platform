@@ -1,20 +1,20 @@
-# Silver Serving MVP Design
+# Silver-to-ClickHouse Serving Contract
 
 ## 1. Milestone goal
 
-Add the smallest analytical serving slice after the completed local Bronze MVP:
+This document records the implemented Silver-to-ClickHouse serving contract:
 
 ```text
 canonical Bronze Iceberg
 → bounded Spark Silver transformation
 → Silver Iceberg
 → bounded ClickHouse load
-→ one Superset dashboard
+→ Metabase through read-only `bi_reader`
 ```
 
 The design is for the existing real Binance symbols `BTCUSDT`, `ETHUSDT`, and `SOLUSDT`. It does not change the live Bronze stream, Kafka, checkpoints, or the canonical Bronze contract.
 
-The deterministic Silver job and unit tests are implemented. ClickHouse service/table/client, JDBC path, Superset configuration, dashboard, and a bounded ClickHouse loader remain future work.
+The deterministic Silver job, ClickHouse service/table/client, bounded JDBC loader, validation gates, atomic publication, and read-only BI access are implemented. The operational command and final acceptance evidence are maintained in the [ClickHouse serving refresh runbook](runbooks/clickhouse-serving-refresh.md).
 
 ## 2. Dashboard questions and metric contracts
 
@@ -39,9 +39,9 @@ Metrics use valid Silver rows only:
 
 The Bronze timestamp fields are Unix epoch milliseconds stored as `BIGINT`. `event_time` is the Binance event timestamp represented in UTC, and `ingested_at` is the producer ingestion timestamp represented in UTC. Spark must use an explicit UTC session/time-zone configuration and preserve millisecond precision. `latency_ms` is exactly `ingested_at_ms - event_time_ms`: source-to-ingestion latency, not end-to-end Kafka/Spark/Iceberg/ClickHouse processing latency. It remains signed; negative values are retained for clock or source anomalies and are never silently clamped.
 
-Dashboard grains are raw trade rows in Silver and minute-level grouping in ClickHouse queries or Superset datasets. No permanent Gold aggregate table is introduced.
+Dashboard grains are raw trade rows in Silver and minute-level grouping in ClickHouse queries or BI datasets. No permanent Gold aggregate table is introduced.
 
-## 3. Proposed architecture
+## 3. Implemented architecture
 
 ```text
 Binance → Kafka → Spark quality-v2 → canonical Bronze Iceberg
@@ -52,10 +52,10 @@ Binance → Kafka → Spark quality-v2 → canonical Bronze Iceberg
                                       ↓ repeatable load
                            market_analytics.silver_trades
                                       ↓ SQL datasets
-                                   Superset dashboard
+                                   Metabase via bi_reader
 ```
 
-Bronze remains the complete audit and quality layer. Silver is the clean analytical layer: valid records only, derived notional and latency, and traceable Kafka coordinates. ClickHouse is a serving copy for dashboard queries, not the source of truth.
+Bronze remains the complete audit and quality layer. Silver is the clean analytical layer: valid records only, derived notional and latency, and traceable Kafka coordinates. ClickHouse is a reproducible serving copy for BI queries, not the source of truth.
 
 ## 4. Minimal Silver contract
 
@@ -65,7 +65,7 @@ Create one Iceberg table:
 market_catalog.market.silver_trades
 ```
 
-Proposed columns and types:
+Columns and types:
 
 | Column | Type | Rule |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ Thus `false` rows and historical `NULL`/`NULL` rows are excluded. `raw_json`, `v
 
 Spark decimal multiplication must remain decimal throughout. The implementation must explicitly cast the result to the agreed `DECIMAL(38,18)` target, test both scale/precision and overflow behavior, and fail visibly if the value cannot be represented. It must never route through `DOUBLE` or silently reduce scale.
 
-The current preserved Bronze evidence is 188 rows: 184 valid, 3 invalid, and 1 historical row with `is_valid IS NULL`. The first Silver build is expected to produce 184 rows, but this is a runtime expectation to verify, not a value hard-coded into production logic.
+An earlier preserved Bronze baseline contained 188 rows: 184 valid, 3 invalid, and 1 historical row with `is_valid IS NULL`. Its initial Silver result is historical validation evidence, not a current dataset size or production constant.
 
 ### Deterministic Silver materialization
 
@@ -112,7 +112,7 @@ The implementation uses Iceberg V2 `DataFrameWriterV2`:
 silver_df.writeTo(silver_table).using("iceberg").createOrReplace()
 ```
 
-Runtime validation established replacement/overwrite behavior rather than append. Repeated builds over unchanged Bronze produced 184 rows and matching complete SHA-256 row-multiset fingerprints, with no accumulated duplicate append. This documents the behavior demonstrated by the current Spark/Iceberg stack; it does not claim universal atomic replacement beyond that evidence. A deterministic row serialization plus SHA-256 and occurrence counts is suitable; process-random Python `hash()` is not.
+Runtime validation established replacement/overwrite behavior rather than append. Repeated builds over unchanged Bronze produced matching complete SHA-256 row-multiset fingerprints, with no accumulated duplicate append. This documents the behavior demonstrated by the current Spark/Iceberg stack; it does not claim universal atomic replacement beyond that evidence. A deterministic row serialization plus SHA-256 and occurrence counts is suitable; process-random Python `hash()` is not.
 
 ### Transport identity and Kafka source epochs
 
@@ -128,7 +128,7 @@ Silver preserves these coordinates for audit and local traceability, but the cur
 Bronze Iceberg → bounded Spark → Silver Iceberg → bounded ClickHouse load
 ```
 
-This keeps Silver as an inspectable source of truth, fits the current Spark/Iceberg repository, is repeatable on the small local dataset, and makes failures easy to rerun. Dashboard freshness is load-driven rather than continuous.
+This keeps Silver as an inspectable source of truth, fits the current Spark/Iceberg repository, is repeatable on the local dataset, and makes failures bounded to one publication attempt. Dashboard freshness is load-driven rather than continuous.
 
 ### B. Continuous Spark streaming
 
@@ -155,8 +155,6 @@ ClickHouse is a reproducible serving copy only. The serving table is:
 ```text
 market_analytics.silver_trades
 ```
-
-The existing `market_data` value in `.env.example` is stale scaffolding and will be corrected in a later implementation or documentation slice. It is not the approved serving database name.
 
 ### Loading boundaries
 
@@ -185,10 +183,7 @@ with whatever snapshot is current under the Silver table name later in the
 run. This prevents a concurrent Silver rebuild from producing a false
 mismatch or a serving copy assembled against inconsistent source states.
 
-For the MVP, concurrent Silver and ClickHouse rebuilds may additionally be
-prohibited operationally, but that restriction does not replace the
-`snapshot_id` contract. The exact Spark time-travel syntax for reading the
-recorded snapshot remains deferred to the implementation slice.
+For the MVP, concurrent Silver and ClickHouse rebuilds are prohibited operationally, but that restriction does not replace the `snapshot_id` contract. The implementation reads the recorded snapshot through the existing bounded Silver source path.
 
 ### Exact ClickHouse schema
 
@@ -256,11 +251,11 @@ Each rebuild uses this exact sequence:
    AND market_analytics.silver_trades_staging
    ```
 
-9. After the exchange, the serving table contains the new snapshot and staging contains the previous serving snapshot.
-10. The previous serving snapshot is available for rollback only until the next rebuild attempt begins.
+9. After the atomic exchange, the serving table contains the new snapshot and staging contains the previously published target as a consequence of the swap.
+10. The current workflow does not implement automatic rollback.
 11. At the start of the next rebuild attempt, staging is truncated.
 
-Failures before `EXCHANGE` leave the serving target unchanged. If that attempt has begun, staging may be empty or partially loaded and the older rollback snapshot is no longer retained. Truncating and inserting directly into the serving table is rejected, as is a non-atomic multi-step rename. Retaining more than one historical serving snapshot or providing durable multi-version rollback is outside the MVP.
+Failures before `EXCHANGE` leave the serving target unchanged. If that attempt has begun, staging may be empty or partially loaded. The current workflow does not implement automatic rollback orchestration. Truncating and inserting directly into the serving table is rejected, as is a non-atomic multi-step rename. Retaining more than one historical serving snapshot or providing durable multi-version rollback is outside the MVP.
 
 ### Pre-exchange validation
 
@@ -318,18 +313,16 @@ byte-identical artifact identity. The unsuffixed standard image is
 preferred for local development; Alpine and distroless variants are
 outside the MVP.
 
-For byte-identical image reproducibility, the implementation must resolve
-and record the multi-platform manifest-index digest associated with the
-approved version tag. The final Compose image reference must use both the
-readable version tag and that digest:
+For byte-identical image reproducibility, the Compose image reference uses
+both the readable version tag and the verified multi-platform manifest-index
+digest:
 
 ```text
 clickhouse/clickhouse-server:26.3.17.56@sha256:<manifest-index-digest>
 ```
 
-The exact digest is intentionally not written here until registry access
-is available and the manifest is verified. The digest is the immutable
-artifact identity. It must identify the multi-platform manifest index;
+The digest is the immutable artifact identity. It identifies the
+multi-platform manifest index;
 an amd64-only or arm64-only child-image digest must not be used. A
 platform-specific child digest would break the native cross-architecture
 contract. Any later change to the ClickHouse version or pinned digest
@@ -344,13 +337,9 @@ Compose must select the native image architecture from the
 multi-platform manifest. Do not configure `platform: linux/amd64`; native
 Apple Silicon development must not require x86 emulation.
 
-Implementation verification must inspect the exact `26.3.17.56` registry
-manifest, confirm both required architectures, capture the top-level
-multi-platform manifest-index digest, place that digest in the Compose
-image reference, and validate native platform selection on both supported
-architectures without `platform: linux/amd64`. The previous local
-manifest command failed because registry DNS was unavailable; this is a
-verification limitation, not a design failure.
+The verified Compose configuration uses the exact `26.3.17.56` release,
+the multi-platform manifest-index digest, and native platform selection
+without `platform: linux/amd64`.
 
 ### Compose service identity and network
 
@@ -410,9 +399,9 @@ plane and Spark JDBC data plane. For the local MVP, `CLICKHOUSE_USER`
 resolves to `market_loader`. Credentials must not be hardcoded in
 `docker-compose.yml`. `CLICKHOUSE_SKIP_USER_SETUP=1` is not enabled.
 
-The committed `.env.example` may later contain safe development examples,
-but real credentials remain outside Git. A separate read-only dashboard
-user is deferred to the dashboard slice.
+The committed `.env.example` contains safe development examples, while real
+credentials remain outside Git. The existing `bi_reader` account provides
+read-only access to the published serving target for BI queries.
 
 ### Database ownership
 
@@ -422,7 +411,7 @@ Application configuration uses:
 CLICKHOUSE_DATABASE=market_analytics
 ```
 
-The implementation must not rely on `CLICKHOUSE_DB` container bootstrap to
+The implementation does not rely on `CLICKHOUSE_DB` container bootstrap to
 establish the database contract. The Python control plane explicitly runs:
 
 ```sql
@@ -431,9 +420,7 @@ ENGINE = Atomic
 ```
 
 Explicit creation keeps the Atomic engine visible and testable rather than
-depending on implicit image initialization. The stale `market_data` value
-currently present in `.env.example` will be corrected during the
-implementation/configuration slice.
+depending on implicit image initialization.
 
 ### Persistent storage
 
@@ -471,9 +458,8 @@ retries:       20
 start_period: 10s
 ```
 
-The exact Compose escaping of environment variables remains deferred to
-the implementation slice and must be covered by configuration/runtime
-validation.
+The Compose healthcheck uses the environment-backed credentials and has been
+validated with the local service configuration.
 
 The service configures the official image's recommended file-descriptor
 limit:
@@ -488,16 +474,14 @@ No additional Linux capabilities are required for the MVP.
 
 ### Lifecycle
 
-Infrastructure lifecycle remains explicit. Later Makefile targets will
-provide bounded operations for starting ClickHouse, waiting for healthy
-status, inspecting status, stopping it without deleting data, and
-performing a destructive reset with explicit volume deletion. Exact
-Makefile target names are deferred. The MVP does not configure an
+Infrastructure lifecycle remains explicit. The Makefile provides bounded
+operations for starting ClickHouse, waiting for healthy status, inspecting
+status, and stopping it without deleting data. The MVP does not configure an
 automatic restart policy.
 
 ### Infrastructure acceptance criteria
 
-Infrastructure implementation is accepted only when:
+The verified infrastructure contract includes:
 
 - the exact `26.3.17.56` tag resolves successfully;
 - its manifest includes `linux/amd64` and `linux/arm64`;
@@ -513,9 +497,17 @@ Infrastructure implementation is accepted only when:
 - the control plane creates `market_analytics` with `ENGINE = Atomic`;
 - no ClickHouse service starts implicitly from application code.
 
-## 8. Superset dashboard contract
+## 8. Metabase and BI boundary
 
-Recommend Superset because it is the conventional lightweight SQL dashboard layer and no visualization layer exists in the repository. The first dashboard should fit one screen.
+Metabase is the current BI layer. It reads the published ClickHouse serving
+target through the read-only `bi_reader` account. A read-only `SELECT` through
+`bi_reader` is the operational serving check; the final acceptance refresh
+also succeeded against the published target.
+
+The current Metabase dashboard includes the following saved questions and
+visualizations. The final E2E acceptance verified that Metabase refreshed
+successfully against the newly published ClickHouse target; it did not
+separately validate every visualization as an independent acceptance criterion.
 
 Filters:
 
@@ -536,35 +528,36 @@ Charts:
 - notional volume per minute by symbol
 - latency over time or a latency distribution
 
-Datasets should query `market_analytics.silver_trades` directly. Dashboard freshness is refresh-based in this milestone, not continuous real-time serving. No authentication, role model, alerting, scheduled reports, or production BI governance is part of this local milestone.
+Datasets query `market_analytics.silver_trades` directly. Dashboard freshness
+is refresh-based, not continuous real-time serving. Dashboard layout,
+authentication, role management, alerting, scheduled reports, and production
+BI governance are outside this local contract.
 
-## 9. Recommended implementation sequence
+## 9. Implemented serving sequence
 
-1. Add the approved ClickHouse database, identical target/staging DDL, and control-plane schema checks.
-2. Add the bounded Spark JDBC data-plane load from the complete Silver snapshot.
-3. Add pre-exchange row-count, symbol-set, per-symbol-count, null, schema, and row-multiset fingerprint validation.
-4. Add the Atomic `EXCHANGE TABLES` full-rebuild lifecycle and failure-boundary checks.
-5. Add read-only ClickHouse query checks for the three symbols and metric definitions.
-6. Add Superset dataset/dashboard configuration and a concise local runbook.
-7. Run one short real-data refresh using the existing Silver rows, then document the supported refresh procedure.
+1. Bind one exact Silver snapshot.
+2. Load the snapshot into ClickHouse staging.
+3. Validate source/staging counts and the duplicate-sensitive full-row multiset fingerprint.
+4. Execute one atomic `EXCHANGE TABLES` only after validation succeeds.
+5. Validate the published target through ClickHouse and `bi_reader`, then refresh Metabase.
 
-The first implementation branch should stop after deterministic Silver tests and one bounded local Silver→ClickHouse validation if the infrastructure is available. Dashboard wiring follows the serving-table contract rather than driving it.
+The [serving refresh runbook](runbooks/clickhouse-serving-refresh.md) owns the
+operational command, runtime settings, and failure handling.
 
 ## 10. Acceptance criteria
 
-The implemented milestone is complete when it proves:
+The implemented contract requires:
 
 1. `market_catalog.market.silver_trades` exists with the agreed schema.
-2. Only valid Bronze rows are transformed; invalid and historical unevaluated rows are absent; the current preserved dataset produces 184 rows.
+2. Only valid Bronze rows are transformed; invalid and historical unevaluated rows are absent.
 3. Decimal price, quantity, and notional calculations remain exact.
 4. Epoch-millisecond conversion and `latency_ms` are correct.
 5. Kafka topic/partition/offset coordinates remain traceable.
 6. Two consecutive Silver builds over unchanged Bronze produce the same complete multiset of Silver rows, including occurrence counts for exact duplicate rows, without append accumulation.
 7. Silver data loads repeatedly into ClickHouse using the documented staging/full-rebuild boundary without duplication.
 8. ClickHouse queries return the expected BTCUSDT, ETHUSDT, and SOLUSDT dimensions.
-9. Superset displays the four KPI cards and four compact charts with symbol/time filters.
-10. A short subsequent real Binance run becomes visible after the supported refresh/load procedure.
-11. The process is documented and reproducible locally.
+9. The published target is readable through `bi_reader`, and the final E2E acceptance verifies a successful Metabase refresh against it; individual visualizations are not separate acceptance criteria.
+10. The process is documented and reproducible locally.
 
 ## 11. Non-goals
 
@@ -575,34 +568,22 @@ The implemented milestone is complete when it proves:
 - Monitoring, alerting, or data-quality observability platforms.
 - Cloud deployment, Kubernetes, Terraform, or multi-broker durability.
 - Large-scale performance tuning.
-- Production Superset authentication, roles, governance, or alerting.
+- Production Metabase authentication, roles, governance, or alerting.
 
 ## 12. Explicitly deferred decisions
 
-The following decisions remain outside this design slice:
+The following decisions remain outside this local contract:
 
-- `docker-compose.yml` implementation;
-- `.env.example` changes;
-- dependency installation;
-- JDBC and Python dependency versions;
-- loader implementation;
-- DDL implementation;
-- Makefile targets;
-- custom ClickHouse configuration files;
-- init scripts;
 - TLS;
 - Keeper;
 - replication and clustering;
 - resource quotas;
-- dashboard implementation;
-- dashboard read-only user;
 - persistent ClickHouse log volume;
 - backup and multi-version rollback;
 - production secret management;
 - cloud deployment;
-- implementation module names;
 - incremental ClickHouse loading;
 - incremental Silver loading;
 - replay-aware `source_epoch` and global deduplication.
 
-Superset provisioning format and refresh-duration targets also remain future dashboard and operational decisions. The approved serving boundary is bounded and refresh-based, not continuous.
+Additional Metabase provisioning, refresh scheduling, and production BI operations remain future decisions. The implemented serving boundary is bounded and refresh-based, not continuous.

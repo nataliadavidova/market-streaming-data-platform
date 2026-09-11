@@ -1,6 +1,6 @@
 # Roadmap
 
-This project is currently in the Version 1 bootstrap phase. Later versions are planned but not implemented yet.
+The Version 1 streaming foundation and bounded Silver-to-ClickHouse-to-Metabase serving path are implemented in the tested local scope. Later versions are planned but not implemented yet.
 
 ## Version 1: Market Streaming MVP
 
@@ -65,7 +65,10 @@ Completed:
 - Controlled two-session reconnect smoke with Kafka offsets `0` and `1`, successful SIGTERM cleanup, and no third session.
 - Reconnect lifecycle observability: incident-local attempt number, configured delay, retryable failure type, and monotonic disconnected duration through first successful recovery publication.
 - Controlled reconnect observability smoke confirming the lifecycle markers and approximately five-second recovery timing.
-- Deterministic Silver Iceberg (`97c7cc3 Build deterministic Silver trades`, `f230b3e Clarify Silver transport identity`): 184 valid rows from 188 Bronze rows, repeatable full rebuilds, exact decimal metrics, UTC millisecond timestamps, and 313 passing tests.
+- Historical deterministic Silver validation (`97c7cc3 Build deterministic Silver trades`, `f230b3e Clarify Silver transport identity`): 184 valid rows from 188 Bronze rows, repeatable full rebuilds, exact decimal metrics, UTC millisecond timestamps, and 313 passing tests.
+- Bounded Silver -> ClickHouse full-snapshot serving with staging, count validation, duplicate-sensitive fingerprint validation, and atomic publication.
+- Read-only `bi_reader` access and Metabase refresh against the published ClickHouse target.
+- Final local end-to-end acceptance of Binance -> Kafka -> Spark -> Bronze -> Silver -> ClickHouse -> bi_reader -> Metabase. Detailed acceptance evidence is kept in the [ClickHouse serving refresh runbook](runbooks/clickhouse-serving-refresh.md).
 - Focused unit coverage for bounded Kafka finalization.
 - Unit-test CI with GitHub Actions.
 
@@ -89,12 +92,12 @@ Planned:
 - Reconnect monitoring and alerting beyond the tested lifecycle logs.
 - Additional stream validation, normalization, and data-quality checks.
 - Iceberg storage monitoring, maintenance, compaction, and schema-evolution work.
-- ClickHouse aggregate writes.
-- Dashboard or analytical SQL layer.
+- Incremental Silver and continuous ClickHouse serving.
+- Additional BI operations and production serving observability.
 
-Next active milestone:
+Current serving boundary:
 
-- Silver Iceberg -> ClickHouse serving.
+- Silver remains the authoritative source of truth, and ClickHouse is refreshed as a reproducible bounded serving copy. Replay, late-arrival handling, deduplication, and incremental serving remain deferred.
 
 ## Version 2: CDC + Greenplum MVP
 

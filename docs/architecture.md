@@ -6,13 +6,15 @@ This project is a portfolio Data Engineering project for a real-time market data
 
 Build a production-style streaming data platform that ingests market trade data, publishes raw events to Kafka, processes them with streaming jobs, stores durable analytical data, and exposes query-ready outputs with basic data-quality checks.
 
-The project remains in the Version 1 bootstrap phase, but the first live ingestion slice is implemented and smoke-tested end to end.
+The continuous Bronze path and the bounded Silver-to-ClickHouse serving path are implemented and verified in the tested local scope. Incremental serving and production operations remain future work.
 
 ## Current and Target Data Flow
 
-Current verified data flow:
+Current verified end-to-end data flow:
 
-`Binance combined BTCUSDT/ETHUSDT/SOLUSDT stream -> producer normalization to TradeEvent -> persistent Kafka -> Spark quality-v2 classifier -> canonical 15-column Iceberg Bronze table -> valid-row bounded transformation -> deterministic Silver Iceberg -> Parquet/metadata in MinIO`
+`Binance combined BTCUSDT/ETHUSDT/SOLUSDT stream -> producer normalization to TradeEvent -> persistent Kafka -> Spark quality-v2 classifier -> canonical 15-column Iceberg Bronze table -> valid-row bounded transformation -> deterministic Silver Iceberg -> bounded ClickHouse full-snapshot publication -> bi_reader -> Metabase`
+
+The Binance-to-Bronze segment is continuous. Silver is rebuilt deterministically from a frozen Bronze snapshot, and ClickHouse is refreshed as a bounded full snapshot after validation.
 
 Spark processing progress is persisted separately:
 
@@ -24,17 +26,11 @@ The read-only inspection path is separate from ingestion and writes:
 
 The inspector reads table state through the existing Iceberg-enabled Spark configuration. It does not start the streaming query, write the table, or inspect or mutate the Spark checkpoint.
 
-The broader target remains:
-
-`... -> Iceberg -> ClickHouse -> dashboard + basic DQ checks`
-
-ClickHouse and dashboard serving are not part of the current implementation.
-
 ### Silver boundary
 
 `canonical Bronze -> valid-row bounded transformation -> deterministic Silver Iceberg`
 
-Silver is the cleaned analytical source of truth. It contains only `is_valid = true` Bronze rows, exact decimal `price`, `quantity`, and `notional`, UTC millisecond timestamps, signed source-to-ingestion latency, and Kafka coordinates as audit fields. ClickHouse will be a reproducible serving copy of Silver, not a replacement source of truth. `(topic, partition, offset)` is unique only within a source/topic epoch; quality-v1 and quality-v2 may reuse offsets, so collisions are retained rather than treated as duplicate business events. A future `source_epoch` or topic-generation identity is deferred to replay/deduplication reliability work.
+Silver is the cleaned analytical source of truth. It contains only `is_valid = true` Bronze rows, exact decimal `price`, `quantity`, and `notional`, UTC millisecond timestamps, signed source-to-ingestion latency, and Kafka coordinates as audit fields. ClickHouse is a reproducible serving copy of Silver, not a replacement source of truth. `(topic, partition, offset)` is unique only within a source/topic epoch; quality-v1 and quality-v2 may reuse offsets, so collisions are retained rather than treated as duplicate business events. A future `source_epoch` or topic-generation identity is deferred to replay/deduplication reliability work.
 
 ## Component Responsibilities
 
@@ -48,9 +44,14 @@ Silver is the cleaned analytical source of truth. It contains only `is_valid = t
 - Hadoop S3A: stores Spark checkpoint objects independently from Iceberg table metadata.
 - MinIO: local S3-compatible storage for Iceberg data, metadata, and Spark checkpoints.
 - Iceberg inspection CLI: reads an existing table's identity, schema, row count, snapshots, history, data files, and partition metadata without table mutation.
-- ClickHouse: low-latency analytical serving layer for aggregates and dashboard queries.
-- Dashboard or SQL layer: user-facing analysis surface.
+- ClickHouse: reproducible serving copy of the complete Silver snapshot for analytical queries.
+- `bi_reader`: read-only ClickHouse consumer used by the BI layer.
+- Metabase: BI layer over the published ClickHouse serving target.
 - Data-quality checks: basic validation for freshness, schema expectations, and event quality.
+
+### ClickHouse serving boundary
+
+The serving workflow binds one Silver snapshot, loads the complete snapshot into staging, validates source and staging row counts plus a duplicate-sensitive full-row multiset fingerprint, and publishes with one atomic `EXCHANGE TABLES`. The active target remains protected until validation succeeds. After an exchange, staging contains the previous target as a consequence of the swap; this is not an automatic rollback mechanism.
 
 ### Kafka storage boundary
 
@@ -246,7 +247,7 @@ Manual checks completed:
 - Controlled local-Kafka delivery-result smoke-check has returned successfully from the default publisher path after callback success and read back the exact published key/value with one new record.
 - Dedicated Binance -> Kafka -> Spark -> Iceberg smoke-checks have verified Bronze writes, S3A checkpoint progress, checkpoint recovery, and clean application-level Spark SIGINT/SIGTERM shutdown.
 
-## Planned Target Architecture
+## Future Work
 
 Planned but not implemented:
 
@@ -259,8 +260,8 @@ Planned but not implemented:
 - Producer container execution.
 - Delivery or undelivered-message logging and metrics.
 - Persistent reconnect counters, aggregate shutdown summaries, periodic health reporting, metrics export, dashboards, and alerts.
-- ClickHouse aggregate loading.
-- Dashboard or analytical SQL layer.
+- Incremental Silver and continuous ClickHouse serving.
+- Replay-aware source epochs, deduplication, monitoring, and production BI operations.
 - Production-like observability, consumer lag monitoring, and reliability features.
 
-Do not treat planned ClickHouse, dashboard, Debezium, observability, or reliability features as implemented. The current Spark/Kafka parser, Iceberg sink, S3A checkpoint, and tested graceful shutdown slices are implemented, but they do not provide universal exactly-once or crash-safety guarantees.
+Do not treat future incremental serving, Debezium, observability, or reliability features as implemented. The current Spark/Kafka parser, Iceberg sink, bounded ClickHouse publication, S3A checkpoint, and tested graceful shutdown slices are implemented, but they do not provide universal exactly-once or crash-safety guarantees.
